@@ -1,5 +1,8 @@
 # 📝 更新日志
 
+## 未发布
+* 新增频道级 AI 过滤提示词：源频道配置 `ai_filter_prompt` 留空继承全局、填写仅对本频道生效（代码仍追加固定 JSON 输出约束），适配不同频道定制审查重点；命令行 `/tg set @频道 ai_filter_prompt ...`（写 清空 恢复继承），支持 `/tg set all` 批量设置，Web 管理页频道表单新增提示词文本域；`/tg get @频道` 显示提示词归属
+
 ## v0.9.2 (2026-10-15)
 * 重构 AI 内容过滤接入方式：移除独立的 `ai_filter_base_url` / `ai_filter_api_key` / `ai_filter_allow_private_endpoint` 配置（连同直连 OpenAI 兼容接口与私网端点防护逻辑），改为复用 AstrBot 已配置的模型服务（Web 面板-配置-服务提供商）；`ai_filter_model` 留空时使用 AstrBot 当前启用的主模型，填写时按该模型名发起请求。模型服务未配置或调用超时/异常时默认放行
 * 新增频道级 AI 内容过滤开关：源频道配置中 `ai_filter_enabled` 支持 继承全局/开启/关闭 三态（与剧透过滤等字段同机制），提示词/超时/单轮预算等参数仍取全局；命令行支持 `/tg set @频道 ai_filter_enabled 继承全局|开启|关闭`，并顺带修复了频道级三态字段经 `/tg set` 设置时"继承全局"被误转为 False 的问题

@@ -256,7 +256,13 @@
                             "关闭"
                         ],
                         "default": "继承全局",
-                        "hint": "开启后该频道的消息发送前交由 AstrBot 已配置的模型做内容审查；模型与提示词等参数仍使用全局配置"
+                        "hint": "开启后该频道的消息发送前交由 AstrBot 已配置的模型做内容审查；模型与超时等参数使用全局配置，提示词可用下方字段按频道覆盖"
+                    },
+                    "ai_filter_prompt": {
+                        "description": "AI 过滤提示词（本频道）",
+                        "type": "text",
+                        "default": "",
+                        "hint": "留空使用全局提示词；填写后仅对本频道生效（代码会无条件追加固定 JSON 输出约束），适合不同频道定制审查重点"
                     },
                     "strip_markdown_links": {
                         "description": "剥离 Markdown 链接，只保留文本",

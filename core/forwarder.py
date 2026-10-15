@@ -555,11 +555,14 @@ class Forwarder:
     async def _is_content_safety_matched(
         self, msg: Message, effective_cfg: dict | None = None
     ) -> bool:
-        # 频道级 ai_filter_enabled 覆盖全局开关；其余参数（提示词/超时/预算/
+        # 频道级覆盖全局的键：AI 过滤开关与提示词；其余参数（模型/超时/预算/
         # 本地二维码过滤等）始终取全局 forward_config。
         config = dict(self.config.get("forward_config", {}))
         if effective_cfg is not None:
             config["ai_filter_enabled"] = effective_cfg.get("ai_filter_enabled", False)
+            effective_prompt = str(effective_cfg.get("ai_filter_prompt", "") or "").strip()
+            if effective_prompt:
+                config["ai_filter_prompt"] = effective_prompt
         if not config.get("ai_filter_enabled", False) and not config.get(
             "qr_filter_enabled", False
         ):
@@ -729,11 +732,15 @@ class Forwarder:
             and global_cfg.get("filter_qr_code_images", False)
         )
 
-        # AI 内容过滤（频道级三态覆盖，模型/提示词/超时等参数仍取全局）
+        # AI 内容过滤（开关为频道级三态覆盖；提示词频道非空即覆盖，留空回落全局）
         ai_filter_enabled = channel_cfg.get("ai_filter_enabled", "继承全局") == "开启" or (
             channel_cfg.get("ai_filter_enabled", "继承全局") == "继承全局"
             and global_cfg.get("ai_filter_enabled", False)
         )
+        channel_ai_prompt = str(channel_cfg.get("ai_filter_prompt", "") or "").strip()
+        ai_filter_prompt = channel_ai_prompt or str(
+            global_cfg.get("ai_filter_prompt", "") or ""
+        ).strip()
 
         # 3.9 Markdown 链接剥离规则
         strip_global = global_cfg.get("strip_markdown_links", False)
@@ -779,6 +786,7 @@ class Forwarder:
             "filter_spoiler_messages": filter_spoiler_messages,
             "filter_qr_code_images": filter_qr_code_images,
             "ai_filter_enabled": ai_filter_enabled,
+            "ai_filter_prompt": ai_filter_prompt,
             "strip_markdown_links": strip_markdown_links,
             "text_replace_rules": text_replace_rules,
             "start_time": channel_cfg.get("start_time", ""),

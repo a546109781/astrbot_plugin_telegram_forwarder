@@ -693,6 +693,69 @@ def test_effective_config_resolves_qr_filter_channel_override(
     assert effective["filter_qr_code_images"] is expected
 
 
+@pytest.mark.parametrize(
+    ("channel_prompt", "global_prompt", "expected"),
+    [
+        ("", "全局提示词", "全局提示词"),
+        ("   ", "全局提示词", "全局提示词"),
+        ("频道专属提示词", "全局提示词", "频道专属提示词"),
+        ("频道专属提示词", "", "频道专属提示词"),
+        ("", "", ""),
+    ],
+)
+def test_effective_config_resolves_ai_prompt_channel_override(
+    channel_prompt, global_prompt, expected
+):
+    forwarder_module = load_forwarder_module()
+    forwarder = forwarder_module.Forwarder.__new__(forwarder_module.Forwarder)
+    forwarder.config = {
+        "target_qq_session": [],
+        "forward_config": {"ai_filter_prompt": global_prompt},
+        "source_channels": [
+            {
+                "channel_username": "demo",
+                "ai_filter_prompt": channel_prompt,
+            }
+        ],
+    }
+
+    effective = forwarder._get_effective_config("demo")
+
+    assert effective["ai_filter_prompt"] == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("effective_prompt", "expected_prompt"),
+    [
+        ("频道专属提示词", "频道专属提示词"),
+        ("", "全局提示词"),
+    ],
+)
+async def test_content_safety_passes_effective_ai_prompt_to_check_ai(
+    effective_prompt, expected_prompt
+):
+    forwarder_module = load_forwarder_module()
+    forwarder = forwarder_module.Forwarder.__new__(forwarder_module.Forwarder)
+    forwarder.config = {"forward_config": {"ai_filter_prompt": "全局提示词"}}
+    forwarder.client = MagicMock()
+    forwarder.content_safety_filter = MagicMock()
+    forwarder.content_safety_filter.check_ai = AsyncMock(
+        return_value={"filter": False, "msg": "放行"}
+    )
+    msg = SimpleNamespace(id=11, text="hello", photo=None, reply_markup=None)
+
+    result = await forwarder._is_content_safety_matched(
+        msg,
+        {"ai_filter_enabled": True, "ai_filter_prompt": effective_prompt},
+    )
+
+    assert result is False
+    _, _, passed_config, _ = forwarder.content_safety_filter.check_ai.await_args.args
+    assert passed_config["ai_filter_prompt"] == expected_prompt
+    assert passed_config["ai_filter_enabled"] is True
+
+
 @pytest.mark.asyncio
 async def test_send_distribution_stops_after_pause_request():
     forwarder_module = load_forwarder_module()

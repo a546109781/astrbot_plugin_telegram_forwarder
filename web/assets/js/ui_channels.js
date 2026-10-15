@@ -24,6 +24,7 @@ export function defaultChannel() {
     filter_spoiler_messages: "继承全局",
     filter_qr_code_images: "继承全局",
     ai_filter_enabled: "继承全局",
+    ai_filter_prompt: "",
     strip_markdown_links: "继承全局",
     monitor_keywords: [],
     monitor_regex: "",
@@ -369,6 +370,7 @@ export function collectChannels({ keepEmpty = true } = {}) {
         filter_spoiler_messages: getTri("filter_spoiler_messages", current.filter_spoiler_messages),
         filter_qr_code_images: getTri("filter_qr_code_images", current.filter_qr_code_images),
         ai_filter_enabled: getTri("ai_filter_enabled", current.ai_filter_enabled),
+        ai_filter_prompt: channelField(card, "ai_filter_prompt") ? getText("ai_filter_prompt") : current.ai_filter_prompt,
         strip_markdown_links: getTri("strip_markdown_links", current.strip_markdown_links),
         monitor_keywords: getList("monitor_keywords", current.monitor_keywords),
         monitor_regex: channelField(card, "monitor_regex") ? getText("monitor_regex") : current.monitor_regex,
@@ -476,6 +478,7 @@ export function renderChannels() {
                   <div class="form-grid">
                     <label class="field">二维码图片${triStateSelect("filter_qr_code_images", cfg.filter_qr_code_images)}</label>
                     <label class="field">AI 内容过滤${triStateSelect("ai_filter_enabled", cfg.ai_filter_enabled)}</label>
+                    <label class="field">AI 过滤提示词（留空继承全局）<textarea data-channel-field="ai_filter_prompt" rows="4" placeholder="留空使用全局提示词；填写后仅对本频道生效">${escapeHtml(cfg.ai_filter_prompt || "")}</textarea></label>
                     <label class="field">过滤关键词<textarea data-channel-field="filter_keywords" rows="4">${escapeHtml(joinList(cfg.filter_keywords))}</textarea></label>
                     <label class="field">监听关键词<textarea data-channel-field="monitor_keywords" rows="4">${escapeHtml(joinList(cfg.monitor_keywords))}</textarea></label>
                     <label class="field">过滤正则<input data-channel-field="filter_regex" value="${escapeHtml(cfg.filter_regex)}" /></label>

@@ -977,6 +977,12 @@ class PluginCommands:
                 lines.append(f"• {display_name:<12} : {raw_str}{suffix}")
 
         if not is_global:
+            raw_prompt = str(ch_cfg.get("ai_filter_prompt", "") or "").strip()
+            if raw_prompt:
+                prompt_val = f"专属提示词（{len(raw_prompt)} 字）"
+            else:
+                prompt_val = "继承全局"
+            lines.append(f"• {'AI 过滤提示词':<12} : {prompt_val}")
             channel_targets = self._get_channel_qq_targets(ch_cfg)
             if channel_targets:
                 target_val = "、".join(str(x) for x in channel_targets)
@@ -1093,6 +1099,10 @@ class PluginCommands:
                     "AI 内容过滤（继承全局 / 开启 / 关闭），模型等参数使用全局配置",
                 ),
                 (
+                    "ai_filter_prompt",
+                    "本频道专属 AI 过滤提示词（写 清空 恢复继承全局；代码会追加固定 JSON 约束）",
+                ),
+                (
                     "strip_markdown_links",
                     "是否剥离 Markdown 链接（继承全局 / 开启 / 关闭）",
                 ),
@@ -1172,6 +1182,7 @@ class PluginCommands:
                 "exclude_text_on_media": "继承全局 / 开启 / 关闭",
                 "filter_spoiler_messages": "继承全局 / 开启 / 关闭",
                 "ai_filter_enabled": "继承全局 / 开启 / 关闭",
+                "ai_filter_prompt": "提示词文本，或 清空 / none 恢复继承全局",
                 "strip_markdown_links": "继承全局 / 开启 / 关闭",
                 "ignore_global_filters": "true / false",
                 "filter_keywords": "关键词1,关键词2",
@@ -1252,6 +1263,8 @@ class PluginCommands:
                 "strip_markdown_links": lambda v: (
                     v.lower() in ("true", "1", "yes", "y", "开启", "开", "是")
                 ),
+                "ai_filter_enabled": self._parse_tri_state,
+                "ai_filter_prompt": str,
                 "ignore_global_filters": lambda v: (
                     v.lower() in ("true", "1", "yes", "y", "开启", "开", "是")
                 ),
@@ -1291,8 +1304,13 @@ class PluginCommands:
                         "target_qq_sessions",
                         "text_replace_rules",
                         "text_replace_rules_text",
+                        "ai_filter_prompt",
                     ):
-                        value = "" if field == "text_replace_rules_text" else []
+                        value = (
+                            ""
+                            if field in ("text_replace_rules_text", "ai_filter_prompt")
+                            else []
+                        )
                     else:
                         value = handler(value_str)
                     old = ch_cfg.get(field, "<未设置>")
@@ -1369,6 +1387,8 @@ class PluginCommands:
                 "strip_markdown_links": lambda v: (
                     v.lower() in ("true", "1", "yes", "y", "开启", "开", "是")
                 ),
+                "ai_filter_enabled": self._parse_tri_state,
+                "ai_filter_prompt": str,
                 "ignore_global_filters": lambda v: (
                     v.lower() in ("true", "1", "yes", "y", "开启", "开", "是")
                 ),
@@ -1402,8 +1422,13 @@ class PluginCommands:
                     "target_qq_sessions",
                     "text_replace_rules",
                     "text_replace_rules_text",
+                    "ai_filter_prompt",
                 ):
-                    value_preview = "" if field == "text_replace_rules_text" else []
+                    value_preview = (
+                        ""
+                        if field in ("text_replace_rules_text", "ai_filter_prompt")
+                        else []
+                    )
                 else:
                     value_preview = field_handlers[field](value_str)
             except Exception as e:
