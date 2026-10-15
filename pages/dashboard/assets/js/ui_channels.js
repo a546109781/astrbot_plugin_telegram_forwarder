@@ -1,4 +1,5 @@
 import { store } from './store.js';
+import { apiRequest } from './api.js';
 import { escapeHtml, channelKey } from './utils.js';
 import { renderQQTargetSelector, renderTGChannelSelector, channelTitleUI, splitList, joinList } from './ui_selector.js';
 import { els } from './context.js';
@@ -18,13 +19,268 @@ export function defaultChannel() {
     ignore_global_filters: false,
     filter_keywords: [],
     filter_regex: "",
+    text_replace_rules: [],
+    text_replace_rules_text: "",
     filter_spoiler_messages: "继承全局",
     filter_qr_code_images: "继承全局",
+    ai_filter_enabled: "继承全局",
     strip_markdown_links: "继承全局",
     monitor_keywords: [],
     monitor_regex: "",
     target_qq_sessions: [],
   };
+}
+
+const REPLACE_REGEX_PREFIXES = ["regex:", "正则:"];
+
+// 把一条规则字符串解析成 { type, pattern, replacement }；解析失败返回 null。
+export function parseReplaceRule(raw) {
+  const line = String(raw || "").trim();
+  if (!line) return null;
+  let type = "plain";
+  let body = line;
+  for (const prefix of REPLACE_REGEX_PREFIXES) {
+    if (body.toLowerCase().startsWith(prefix)) {
+      type = "regex";
+      body = body.slice(prefix.length).trim();
+      break;
+    }
+  }
+  const sepIndex = body.indexOf("=>");
+  if (sepIndex < 0) return null;
+  const pattern = body.slice(0, sepIndex).trim();
+  const replacement = body.slice(sepIndex + 2).trim();
+  if (!pattern) return null;
+  return { type, pattern, replacement };
+}
+
+export function serializeReplaceRule(rule) {
+  const prefix = rule.type === "regex" ? "regex:" : "";
+  return `${prefix}${rule.pattern} => ${rule.replacement}`;
+}
+
+function parseReplaceRules(rawRules) {
+  if (!Array.isArray(rawRules)) return [];
+  return rawRules
+    .map((raw) => parseReplaceRule(raw))
+    .filter((rule) => rule !== null);
+}
+
+function renderReplaceRuleRows(cfg, key) {
+  const rules = parseReplaceRules(cfg.text_replace_rules);
+  const hasPendingEmpty = store.state.pendingReplaceRules?.has(key);
+  const rows = rules.map((rule) => replaceRuleRowHtml(rule));
+  if (hasPendingEmpty) {
+    rows.push(replaceRuleRowHtml({ type: "plain", pattern: "", replacement: "" }));
+  }
+  const textLines = String(cfg.text_replace_rules_text || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (textLines.length) {
+    rows.push(
+      `<p class="replace-rules-empty">另有 ${textLines.length} 条规则配置在「替换净化规则（文本域备选）」（text_replace_rules_text），与上方规则合并生效，请到 AstrBot 配置面板编辑。</p>`,
+    );
+  }
+  if (!rows.length) {
+    return '<p class="replace-rules-empty">尚未配置替换规则。普通替换：匹配内容 ⇒ 替换为；正则替换需在匹配内容中使用 Python 正则（默认多行模式，^/$ 匹配行首行尾，整段首尾用 \\A/\\Z）。</p>';
+  }
+  return rows.join("");
+}
+
+function replaceRuleRowHtml(rule) {
+  return `
+    <div class="replace-rule-row" data-replace-rule-row>
+      <select data-replace-type>
+        <option value="plain" ${rule.type === "plain" ? "selected" : ""}>普通替换</option>
+        <option value="regex" ${rule.type === "regex" ? "selected" : ""}>正则替换</option>
+      </select>
+      <input data-replace-pattern value="${escapeHtml(rule.pattern)}" placeholder="匹配内容（不能含 =>）" />
+      <span class="replace-rule-arrow">⇒</span>
+      <input data-replace-replacement value="${escapeHtml(rule.replacement)}" placeholder="替换为（留空=删除，正则支持 \\1 反向引用）" />
+      <button class="btn btn-soft danger replace-rule-remove" type="button" data-remove-replace-rule title="删除规则">✕</button>
+    </div>
+  `;
+}
+
+// 读取单条规则行的 DOM 内容；pattern 为空时返回 null。
+function readReplaceRuleRow(row) {
+  const patternInput = row.querySelector("[data-replace-pattern]");
+  if (!patternInput) return null;
+  const pattern = patternInput.value.trim();
+  if (!pattern) return null;
+  const typeSelect = row.querySelector("[data-replace-type]");
+  const replacementInput = row.querySelector("[data-replace-replacement]");
+  return {
+    type: typeSelect?.value === "regex" ? "regex" : "plain",
+    pattern,
+    replacement: (replacementInput?.value || "").trim(),
+  };
+}
+
+// 从规则编辑器 DOM 收集规则；空 pattern 的行被丢弃并记入 hadEmptyRow，
+// 以便“待填空行”标记在切换标签/重渲染时不丢失。
+function collectReplaceRules(card, fallback) {
+  const host = channelField(card, "text_replace_rules");
+  if (!host) return { rules: fallback, hadEmptyRow: false };
+  const rows = Array.from(host.querySelectorAll("[data-replace-rule-row]"));
+  let hadEmptyRow = false;
+  const rules = [];
+  for (const row of rows) {
+    const rule = readReplaceRuleRow(row);
+    if (rule) {
+      rules.push(serializeReplaceRule(rule));
+    } else if (row.querySelector("[data-replace-pattern]")) {
+      hadEmptyRow = true;
+    }
+  }
+  return { rules, hadEmptyRow };
+}
+
+// ── 替换净化规则预览弹窗 ──────────────────────────────────────────────
+// 左侧输入待净化文本，右侧实时显示经服务端真实管线（clean_telegram_text +
+// 规则替换，Python 正则）处理后的结果，并逐条标注规则命中情况，方便调试正则。
+let replacePreviewModal = null;
+
+function ensureReplacePreviewModal() {
+  if (replacePreviewModal) return replacePreviewModal;
+  const overlay = document.createElement("div");
+  overlay.className = "replace-preview-overlay";
+  overlay.hidden = true;
+  overlay.innerHTML = `
+    <div class="replace-preview-modal" role="dialog" aria-modal="true" aria-label="替换净化规则预览">
+      <div class="replace-preview-head">
+        <div class="replace-preview-title">
+          <strong>替换净化预览</strong>
+          <span>按真实转发管线执行：文本清洗 → 规则替换（服务端 Python 正则）</span>
+        </div>
+        <button class="btn btn-soft danger replace-preview-close" type="button" title="关闭">✕</button>
+      </div>
+      <div class="replace-preview-toolbar">
+        <label class="replace-preview-check">
+          <input type="checkbox" class="replace-preview-strip" />
+          <span>剥离 Markdown 链接（模拟转发清洗）</span>
+        </label>
+        <span class="replace-preview-rulecount"></span>
+      </div>
+      <div class="replace-preview-body">
+        <label class="replace-preview-pane">
+          <span>待净化文本（原始消息文本）</span>
+          <textarea class="replace-preview-input" rows="14" placeholder="粘贴或输入要测试的 Telegram 消息文本，结果会实时显示…" spellcheck="false"></textarea>
+        </label>
+        <div class="replace-preview-pane">
+          <span>净化结果</span>
+          <textarea class="replace-preview-output" rows="14" readonly placeholder="净化结果将实时显示…"></textarea>
+          <div class="replace-preview-hits"></div>
+        </div>
+      </div>
+      <p class="replace-preview-error" hidden></p>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  const state = {
+    overlay,
+    input: overlay.querySelector(".replace-preview-input"),
+    output: overlay.querySelector(".replace-preview-output"),
+    hits: overlay.querySelector(".replace-preview-hits"),
+    strip: overlay.querySelector(".replace-preview-strip"),
+    error: overlay.querySelector(".replace-preview-error"),
+    rulecount: overlay.querySelector(".replace-preview-rulecount"),
+    rules: [],
+    timer: null,
+    seq: 0,
+  };
+
+  const close = () => {
+    state.overlay.hidden = true;
+    window.clearTimeout(state.timer);
+    state.seq += 1; // 使在途请求失效
+  };
+  const schedule = () => {
+    window.clearTimeout(state.timer);
+    state.timer = window.setTimeout(() => runReplacePreview(state), 350);
+  };
+
+  overlay.querySelector(".replace-preview-close").addEventListener("click", close);
+  overlay.addEventListener("mousedown", (event) => {
+    if (event.target === overlay) close();
+  });
+  state.input.addEventListener("input", schedule);
+  state.strip.addEventListener("change", schedule);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !overlay.hidden) close();
+  });
+
+  replacePreviewModal = state;
+  return state;
+}
+
+async function runReplacePreview(state) {
+  const seq = ++state.seq;
+  try {
+    const data = await apiRequest("/api/text-replace/preview", "POST", {
+      text: state.input.value,
+      rules: state.rules,
+      strip_links: state.strip.checked,
+    });
+    if (seq !== state.seq) return; // 已过期（关闭或又触发了新请求）
+    state.error.hidden = true;
+    state.output.value = data.result ?? "";
+    state.hits.innerHTML = renderReplaceHitList(state.rules, data.rule_reports || []);
+  } catch (err) {
+    if (seq !== state.seq) return;
+    state.output.value = "";
+    state.hits.innerHTML = "";
+    state.error.textContent = err?.message || "预览请求失败，请稍后重试。";
+    state.error.hidden = false;
+  }
+}
+
+function renderReplaceHitList(rules, reports) {
+  const invalidCount = rules.filter((raw) => parseReplaceRule(raw) === null).length;
+  const invalidHint = invalidCount
+    ? `<p class="replace-preview-hit warn">⚠ 有 ${invalidCount} 条规则格式非法（缺 => 分隔符或正则错误），已被忽略。</p>`
+    : "";
+  if (!reports.length) {
+    return `${invalidHint}<p class="replace-preview-hit empty">当前没有可用的替换规则。</p>`;
+  }
+  const items = reports
+    .map((r) => {
+      const typeBadge = r.type === "regex" ? "正则" : "普通";
+      let status;
+      let cls;
+      if (r.error) {
+        status = `⚠ 应用失败：${r.error}`;
+        cls = "hit-error";
+      } else if (r.matched) {
+        status = `✓ 命中 ${r.count} 次`;
+        cls = "hit-ok";
+      } else {
+        status = "未命中";
+        cls = "hit-none";
+      }
+      return `
+        <div class="replace-preview-hit ${cls}">
+          <span class="hit-badge">${typeBadge}</span>
+          <code>${escapeHtml(r.pattern)} ⇒ ${escapeHtml(r.replacement)}</code>
+          <span class="hit-status">${escapeHtml(status)}</span>
+        </div>
+      `;
+    })
+    .join("");
+  return invalidHint + items;
+}
+
+function openReplacePreview(rules) {
+  const state = ensureReplacePreviewModal();
+  state.rules = Array.isArray(rules) ? rules : [];
+  const validCount = state.rules.filter((raw) => parseReplaceRule(raw) !== null).length;
+  state.rulecount.textContent = state.rules.length
+    ? `共 ${validCount} 条有效规则`
+    : "当前没有规则";
+  state.overlay.hidden = false;
+  runReplacePreview(state);
 }
 
 function triStateSelect(name, value) {
@@ -88,6 +344,7 @@ export function collectChannels({ keepEmpty = true } = {}) {
         return field ? Boolean(field.checked) : fallback;
       };
       const getTri = (name, fallback) => getText(name) || fallback;
+      const replaceState = collectReplaceRules(card, current.text_replace_rules);
       const oldKey = card.dataset.channelKey;
       const channelUsernameField = channelField(card, "channel_username");
       const collected = {
@@ -106,8 +363,12 @@ export function collectChannels({ keepEmpty = true } = {}) {
         ignore_global_filters: getBool("ignore_global_filters", current.ignore_global_filters),
         filter_keywords: getList("filter_keywords", current.filter_keywords),
         filter_regex: channelField(card, "filter_regex") ? getText("filter_regex") : current.filter_regex,
+        text_replace_rules: replaceState.rules,
+        // 文本域备选字段由 AstrBot 配置面板 / 命令编辑，这里仅透传保留。
+        text_replace_rules_text: current.text_replace_rules_text,
         filter_spoiler_messages: getTri("filter_spoiler_messages", current.filter_spoiler_messages),
         filter_qr_code_images: getTri("filter_qr_code_images", current.filter_qr_code_images),
+        ai_filter_enabled: getTri("ai_filter_enabled", current.ai_filter_enabled),
         strip_markdown_links: getTri("strip_markdown_links", current.strip_markdown_links),
         monitor_keywords: getList("monitor_keywords", current.monitor_keywords),
         monitor_regex: channelField(card, "monitor_regex") ? getText("monitor_regex") : current.monitor_regex,
@@ -122,6 +383,13 @@ export function collectChannels({ keepEmpty = true } = {}) {
         if (store.state.channelGroups[oldKey]) {
           store.state.channelGroups[newKey] = store.state.channelGroups[oldKey];
           delete store.state.channelGroups[oldKey];
+        }
+      }
+      // “待填空行”标记跟随频道键迁移：空行仍在 DOM 时保留，已填写则清除。
+      if (oldKey && store.state.pendingReplaceRules?.has(oldKey)) {
+        store.state.pendingReplaceRules.delete(oldKey);
+        if (replaceState.hadEmptyRow) {
+          store.state.pendingReplaceRules.add(newKey);
         }
       }
       return collected;
@@ -146,6 +414,10 @@ export function renderChannels() {
             : store.state.config?.target_qq_session?.length
               ? "继承默认 QQ 目标"
               : "未配置 QQ 目标";
+          const replaceCount = parseReplaceRules(cfg.text_replace_rules).length;
+          const replaceSummary = replaceCount
+            ? `净化规则 ${replaceCount} 条`
+            : "";
           return `
             <article class="channel-card ${collapsed ? "collapsed" : ""}" data-channel-index="${index}" data-channel-key="${escapeHtml(key)}">
               <button class="channel-summary" type="button" data-toggle-channel="${index}">
@@ -156,6 +428,7 @@ export function renderChannels() {
                     <span>间隔 ${escapeHtml(cfg.check_interval || "全局")} 秒</span>
                     <span>优先级 ${escapeHtml(cfg.priority || 0)}</span>
                     <span>${escapeHtml(targetSummary)}</span>
+                    ${replaceSummary ? `<span>${escapeHtml(replaceSummary)}</span>` : ""}
                   </div>
                 </div>
                 <span class="chevron">⌄</span>
@@ -202,10 +475,23 @@ export function renderChannels() {
                   </label>
                   <div class="form-grid">
                     <label class="field">二维码图片${triStateSelect("filter_qr_code_images", cfg.filter_qr_code_images)}</label>
+                    <label class="field">AI 内容过滤${triStateSelect("ai_filter_enabled", cfg.ai_filter_enabled)}</label>
                     <label class="field">过滤关键词<textarea data-channel-field="filter_keywords" rows="4">${escapeHtml(joinList(cfg.filter_keywords))}</textarea></label>
                     <label class="field">监听关键词<textarea data-channel-field="monitor_keywords" rows="4">${escapeHtml(joinList(cfg.monitor_keywords))}</textarea></label>
                     <label class="field">过滤正则<input data-channel-field="filter_regex" value="${escapeHtml(cfg.filter_regex)}" /></label>
                     <label class="field">监听正则<input data-channel-field="monitor_regex" value="${escapeHtml(cfg.monitor_regex)}" /></label>
+                  </div>
+                  <div class="replace-rules" data-channel-field="text_replace_rules">
+                    <div class="replace-rules-head">
+                      <span>内容替换净化（本频道转发文本，按顺序执行；正则多行模式，^/$ 匹配行首尾）</span>
+                      <span class="replace-rules-actions">
+                        <button class="btn btn-soft" type="button" data-preview-replace-rules="${index}">预览规则</button>
+                        <button class="btn btn-soft" type="button" data-add-replace-rule="${index}">添加规则</button>
+                      </span>
+                    </div>
+                    <div class="replace-rules-list">
+                      ${renderReplaceRuleRows(cfg, key)}
+                    </div>
                   </div>
                 </section>
                 <section class="channel-section ${group === "targets" ? "active" : ""}" data-channel-section="targets">
@@ -276,6 +562,67 @@ export function renderChannels() {
       const textarea = channelField(card, "target_qq_sessions");
       if (textarea) textarea.value = "";
       collectChannels();
+      renderChannels();
+    });
+  });
+  document.querySelectorAll("[data-preview-replace-rules]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const card = button.closest(".channel-card");
+      const host = card ? channelField(card, "text_replace_rules") : null;
+      const rules = host
+        ? Array.from(host.querySelectorAll("[data-replace-rule-row]"))
+            .map((row) => readReplaceRuleRow(row))
+            .filter((rule) => rule !== null)
+            .map(serializeReplaceRule)
+        : [];
+      openReplacePreview(rules);
+    });
+  });
+  document.querySelectorAll("[data-add-replace-rule]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      collectChannels();
+      const index = Number.parseInt(button.dataset.addReplaceRule, 10);
+      const channel = store.state.config.source_channels?.[index];
+      if (!channel) return;
+      const key = channelKey({ ...defaultChannel(), ...channel }, index);
+      store.state.pendingReplaceRules.add(key);
+      store.state.expandedChannels.add(key);
+      store.state.channelGroups[key] = "filters";
+      renderChannels();
+    });
+  });
+  document.querySelectorAll("[data-remove-replace-rule]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const card = button.closest(".channel-card");
+      const row = button.closest("[data-replace-rule-row]");
+      if (!card || !row) return;
+      const rule = readReplaceRuleRow(row);
+      if (!rule) {
+        // 删除的是待填空行：直接清掉标记并重渲染。
+        const key = card.dataset.channelKey;
+        if (key) store.state.pendingReplaceRules.delete(key);
+        renderChannels();
+        return;
+      }
+      collectChannels();
+      const index = Number.parseInt(card.dataset.channelIndex, 10);
+      const channel = store.state.config.source_channels?.[index];
+      if (!channel || !Array.isArray(channel.text_replace_rules)) return;
+      const serialized = serializeReplaceRule(rule);
+      const ruleIndex = channel.text_replace_rules.indexOf(serialized);
+      if (ruleIndex >= 0) {
+        channel.text_replace_rules.splice(ruleIndex, 1);
+      } else {
+        // 规则串可能因格式差异对不上，退化为删除同 pattern 的第一条。
+        const parsed = parseReplaceRules(channel.text_replace_rules);
+        const matchIdx = parsed.findIndex(
+          (item) => item.type === rule.type && item.pattern === rule.pattern && item.replacement === rule.replacement,
+        );
+        if (matchIdx >= 0) channel.text_replace_rules.splice(matchIdx, 1);
+      }
       renderChannels();
     });
   });

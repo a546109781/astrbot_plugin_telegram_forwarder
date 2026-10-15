@@ -29,6 +29,11 @@ from telethon.errors import (
 )
 from telethon.sessions import StringSession
 
+from ..common.text_tools import (
+    apply_text_replace_rules,
+    clean_telegram_text,
+    parse_text_replace_rules,
+)
 from .client import TelegramClientWrapper
 from .qq_group_cache import QQGroupCache
 from .tg_channel_cache import TGChannelCache
@@ -42,7 +47,6 @@ DEFAULT_WEB_CONFIG = {
     "token": "",
 }
 WEAK_DEFAULT_WEB_TOKENS = {"123456"}
-AI_KEY_PLACEHOLDER = "[REDACTED]"
 PROXY_PASSWORD_PLACEHOLDER = "[REDACTED]"
 SILENT_OK_WEB_PATHS = {"/api/status"}
 SILENT_OK_WEB_PREFIXES = ("/assets/",)
@@ -51,6 +55,7 @@ WEB_REQUEST_LABELS = {
     ("POST", "/api/auth/check"): "验证 Web Token",
     ("GET", "/api/config"): "读取配置",
     ("POST", "/api/config"): "保存配置",
+    ("POST", "/api/text-replace/preview"): "预览替换净化规则",
     ("GET", "/api/qq/groups"): "加载 QQ 群列表",
     ("POST", "/api/qq/groups/refresh"): "刷新 QQ 群列表",
     ("GET", "/api/tg/channels"): "加载 Telegram 频道列表",
@@ -379,6 +384,12 @@ class WebAdminServer:
             payload = request.get_json(silent=True) or {}
             return run_api(self.test_proxy(payload), timeout=15.0)
 
+        @app.post("/api/text-replace/preview")
+        @require_auth
+        def api_text_replace_preview():
+            payload = request.get_json(silent=True) or {}
+            return run_api(self.preview_text_replace(payload), timeout=15.0)
+
         @app.get("/api/export/config")
         @require_auth
         def api_export_config():
@@ -522,6 +533,10 @@ class WebAdminServer:
         if not wrapper.client:
             wrapper._init_client()
         if not wrapper.client:
+            if wrapper.has_credentials():
+                raise WebAdminError(
+                    "Telegram 客户端初始化失败（api_id/api_hash 已配置），请检查插件日志。"
+                )
             raise WebAdminError("Telegram 客户端未就绪，请先配置 api_id / api_hash。")
         return wrapper
 
@@ -656,6 +671,10 @@ class WebAdminServer:
         os.makedirs(temp_dir, exist_ok=True)
         self._login_wrapper = TelegramClientWrapper(self.plugin.config, Path(temp_dir))
         if not self._login_wrapper.client:
+            if self._login_wrapper.has_credentials():
+                raise WebAdminError(
+                    "Telegram 客户端初始化失败（api_id/api_hash 已配置），请检查插件日志。"
+                )
             raise WebAdminError("Telegram 客户端未就绪，请先配置 api_id / api_hash。")
         return self._login_wrapper
 
@@ -930,9 +949,6 @@ class WebAdminServer:
 
     async def get_config(self) -> dict[str, Any]:
         config = self._to_plain(dict(self.plugin.config))
-        forward_config = config.get("forward_config")
-        if isinstance(forward_config, dict) and forward_config.get("ai_filter_api_key"):
-            forward_config["ai_filter_api_key"] = AI_KEY_PLACEHOLDER
         proxy_config = self.normalize_proxy_config(
             config.get("proxy_config"), config.get("proxy", "")
         )
@@ -1189,6 +1205,35 @@ class WebAdminServer:
             self._probe_proxy_sync, proxy_config, mode, timeout
         )
 
+    async def preview_text_replace(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """按真实转发管线预览内容替换净化规则的效果。
+
+        处理顺序与 QQ 发送路径一致：先 ``clean_telegram_text`` 清洗，
+        再按顺序应用替换规则。返回清洗后文本、最终结果与逐条规则命中报告，
+        便于在 Web 页面上调试正则。
+        """
+        text = str(payload.get("text") or "")
+        if len(text) > 20000:
+            raise WebAdminError("待预览文本过长（上限 20000 字符）。")
+        raw_rules = payload.get("rules", [])
+        if raw_rules is None:
+            raw_rules = []
+        if not isinstance(raw_rules, list):
+            raise WebAdminError("rules 必须是列表。")
+        if len(raw_rules) > 200:
+            raise WebAdminError("替换规则过多（上限 200 条）。")
+        strip_links = bool(payload.get("strip_links", False))
+
+        rules = parse_text_replace_rules(raw_rules)
+        cleaned = clean_telegram_text(text, strip_links=strip_links)
+        rule_reports: list[dict[str, Any]] = []
+        result = apply_text_replace_rules(cleaned, rules, rule_reports=rule_reports)
+        return {
+            "cleaned": cleaned,
+            "result": result,
+            "rule_reports": rule_reports,
+        }
+
     async def list_qq_groups(self, force: bool = False) -> dict[str, Any]:
         return await self.qq_group_cache.list_groups(
             self._configured_qq_group_ids(),
@@ -1256,6 +1301,7 @@ class WebAdminServer:
                 "filter_keywords",
                 "monitor_keywords",
                 "target_qq_sessions",
+                "text_replace_rules",
             ):
                 cfg[list_key] = self._as_string_list(cfg.get(list_key))
             normalized.append(cfg)
@@ -1348,15 +1394,13 @@ class WebAdminServer:
             if not isinstance(incoming["forward_config"], dict):
                 raise WebAdminError("forward_config 必须是对象。")
             forward_config = dict(incoming["forward_config"])
-            old_forward_config = self.plugin.config.get("forward_config", {})
-            if (
-                forward_config.get("ai_filter_api_key") == AI_KEY_PLACEHOLDER
-                and isinstance(old_forward_config, dict)
-                and old_forward_config.get("ai_filter_api_key")
+            # 已废弃的直连 AI 端点字段不再使用；保存时丢弃，防止旧配置残留。
+            for stale_key in (
+                "ai_filter_base_url",
+                "ai_filter_api_key",
+                "ai_filter_allow_private_endpoint",
             ):
-                forward_config["ai_filter_api_key"] = old_forward_config[
-                    "ai_filter_api_key"
-                ]
+                forward_config.pop(stale_key, None)
             for list_key in (
                 "forward_types",
                 "filter_keywords",

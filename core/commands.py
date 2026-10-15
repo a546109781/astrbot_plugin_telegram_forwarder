@@ -68,6 +68,40 @@ class PluginCommands:
                 targets.append(val)
         return targets
 
+    @staticmethod
+    def _parse_tri_state(raw_value: str) -> str:
+        """解析频道级三态字段：继承全局 / 开启 / 关闭。"""
+        value = str(raw_value).strip()
+        if value in ("继承全局", "inherit", "default", "global"):
+            return "继承全局"
+        lowered = value.lower()
+        if lowered in ("true", "1", "yes", "y", "开启", "开", "是"):
+            return "开启"
+        if lowered in ("false", "0", "no", "n", "关闭", "关", "否"):
+            return "关闭"
+        raise ValueError("需要三态值：继承全局 / 开启 / 关闭")
+
+    @staticmethod
+    def _parse_text_replace_rules(raw_value: str) -> list:
+        """解析内容替换净化规则：多条规则用换行或分号（半角/全角）分隔。
+
+        每条规则格式：``匹配内容 => 替换为``，正则规则加 ``regex:`` 前缀。
+        规则内容里常见逗号，因此不能用逗号做分隔符；匹配内容本身含分号时，
+        请用换行分隔多条规则。
+        """
+        rules = []
+        for item in str(raw_value).replace(";", "\n").replace("；", "\n").splitlines():
+            val = item.strip()
+            if val:
+                rules.append(val)
+        if not rules:
+            raise ValueError("规则列表为空")
+        invalid = [r for r in rules if "=>" not in r]
+        if invalid:
+            preview = invalid[0][:30] + ("..." if len(invalid[0]) > 30 else "")
+            raise ValueError(f"规则缺少 => 分隔符：{preview}")
+        return rules
+
     def _get_root_qq_targets(self):
         return self.config.get("target_qq_session", [])
 
@@ -168,9 +202,12 @@ class PluginCommands:
     async def _login_start(self, event: AstrMessageEvent, phone_arg: str):
         wrapper = self.forwarder.client_wrapper
         if not wrapper or not wrapper.client:
-            yield event.plain_result(
-                "Telegram 客户端未就绪，请先配置 api_id / api_hash。"
+            message = (
+                "Telegram 客户端初始化失败（api_id/api_hash 已配置），请检查插件日志。"
+                if wrapper and wrapper.has_credentials()
+                else "Telegram 客户端未就绪，请先配置 api_id / api_hash。"
             )
+            yield event.plain_result(message)
             return
 
         try:
@@ -677,9 +714,6 @@ class PluginCommands:
             auth = "***@" if value.get("username") or value.get("password") else ""
             return f"{protocol}://{auth}{host}{port_text}" if host else "<未设置>"
 
-        if field_name == "ai_filter_api_key":
-            return "[REDACTED]"
-
         if field_name == "proxy":
             # 旧 proxy URL 可能含账号密码，必须确定性整段脱敏，不能随机遮一部分。
             from urllib.parse import urlparse
@@ -711,7 +745,6 @@ class PluginCommands:
             "phone",
             "proxy",
             "proxy_config",
-            "ai_filter_api_key",
         }
 
         if field_name not in sensitive_fields:
@@ -867,6 +900,26 @@ class PluginCommands:
         format_list_field("forward_types", "转发类型", val_type=True)
         format_list_field("filter_keywords", "过滤关键词")
         format_list_field("monitor_keywords", "监听关键词")
+        if not is_global:
+            rules = cfg.get("text_replace_rules", [])
+            rule_count = len(rules) if isinstance(rules, list) else 0
+            text_rules = str(cfg.get("text_replace_rules_text", "") or "").strip()
+            text_rule_count = (
+                len([ln for ln in text_rules.splitlines() if ln.strip()]) if text_rules else 0
+            )
+            total_count = rule_count + text_rule_count
+            rule_preview = (
+                "；".join(str(r) for r in rules[:3])
+                + ("…" if rule_count > 3 else "")
+                if rule_count
+                else ("文本域规则" if text_rule_count else "无")
+            )
+            lines.append(
+                f"• {'替换净化规则':<12} : {total_count} 条"
+                + (f"（含文本域 {text_rule_count} 条）" if text_rule_count else "")
+            )
+            if rule_count:
+                lines.append(f"{'':<16}{rule_preview}")
 
         # 正则只显示是否存在
         for key, name in [("filter_regex", "正则过滤"), ("monitor_regex", "监听正则")]:
@@ -877,9 +930,7 @@ class PluginCommands:
             lines.extend(
                 [
                     f"• {'AI 内容过滤':<12} : {'开启' if cfg.get('ai_filter_enabled') else '关闭'}",
-                    f"• {'AI 接口':<12} : {'已配置' if cfg.get('ai_filter_base_url') else '未设置'}",
-                    f"• {'AI API Key':<12} : {'已设置' if cfg.get('ai_filter_api_key') else '未设置'}",
-                    f"• {'AI 模型':<12} : {cfg.get('ai_filter_model') or '<未设置>'}",
+                    f"• {'AI 模型':<12} : {cfg.get('ai_filter_model') or 'AstrBot 主模型'}",
                     f"• {'本地二维码过滤':<12} : {'开启' if cfg.get('qr_filter_enabled') else '关闭'}",
                 ]
             )
@@ -888,13 +939,18 @@ class PluginCommands:
         inherit_fields = [
             "exclude_text_on_media",
             "filter_spoiler_messages",
+            "ai_filter_enabled",
             "strip_markdown_links",
         ]
 
         for key in inherit_fields:
+            # 全局模式的 AI 开口已在上方 AI 专块展示，这里只做频道视角
+            if key == "ai_filter_enabled" and is_global:
+                continue
             name_map = {
                 "exclude_text_on_media": "媒体消息仅发送媒体",
                 "filter_spoiler_messages": "过滤剧透消息",
+                "ai_filter_enabled": "AI 内容过滤",
                 "strip_markdown_links": "剥离MD链接只留文字",
             }
             display_name = name_map.get(key, key.replace("_", " ").title())
@@ -987,15 +1043,9 @@ class PluginCommands:
                 ("filter_keywords", "全局过滤关键词（包含任意一个即丢弃，逗号分隔）"),
                 ("filter_regex", "全局正则过滤（Python re 语法）"),
                 ("ai_filter_enabled", "AI 内容过滤开关（true/false）"),
-                ("ai_filter_base_url", "OpenAI 兼容 Base URL"),
-                (
-                    "ai_filter_allow_private_endpoint",
-                    "允许受信任的本地/私网 AI 端点（true/false）",
-                ),
-                ("ai_filter_api_key", "AI API Key（查询配置时不会显示明文）"),
-                ("ai_filter_model", "支持图片输入的模型名"),
+                ("ai_filter_model", "AI 模型名（留空=AstrBot 当前主模型）"),
                 ("ai_filter_prompt", "AI 内容过滤提示词（代码会追加固定 JSON 约束）"),
-                ("ai_filter_timeout", "AI 接口总超时秒数"),
+                ("ai_filter_timeout", "AI 过滤超时秒数"),
                 ("ai_filter_max_calls_per_cycle", "单轮 AI 分析上限"),
                 ("qr_filter_enabled", "本地二维码过滤开关（true/false）"),
                 ("qr_filter_mode", "二维码过滤模式（风险二维码/全部二维码）"),
@@ -1041,6 +1091,10 @@ class PluginCommands:
                     "是否过滤剧透消息（继承全局 / 开启 / 关闭）",
                 ),
                 (
+                    "ai_filter_enabled",
+                    "AI 内容过滤（继承全局 / 开启 / 关闭），模型等参数使用全局配置",
+                ),
+                (
                     "strip_markdown_links",
                     "是否剥离 Markdown 链接（继承全局 / 开启 / 关闭）",
                 ),
@@ -1050,6 +1104,14 @@ class PluginCommands:
                 ),
                 ("filter_keywords", "本频道专属过滤关键词（逗号分隔）"),
                 ("filter_regex", "本频道专属正则过滤"),
+                (
+                    "text_replace_rules",
+                    "内容替换净化规则（多条用分号或换行分隔，每条：匹配内容 => 替换为；正则规则加 regex: 前缀，替换为留空表示删除；正则默认多行模式，^/$ 匹配行首行尾）",
+                ),
+                (
+                    "text_replace_rules_text",
+                    "替换净化规则·文本域备选（每行一条，格式同上，与规则列表合并生效，适合多行消息设置）",
+                ),
                 ("monitor_keywords", "本频道专属监听关键词（命中立即抓取）"),
                 ("monitor_regex", "本频道专属监听正则"),
             ]
@@ -1094,6 +1156,8 @@ class PluginCommands:
                 "forward_types": "文字,图片,视频,音频,文件（逗号分隔）",
                 "filter_keywords": "关键词1,关键词2,广告",
                 "filter_regex": "正则表达式，例如 ^(测试|广告)",
+                "ai_filter_model": "模型名，留空使用 AstrBot 主模型，例如 gemini-2.0-flash",
+                "ai_filter_timeout": "秒数（1~60），例如 20",
                 "monitor_keywords": "关键词1,关键词2",
                 "monitor_regex": "正则表达式",
                 "curfew_time": "时间段，例如 23:00-07:00 或留空",
@@ -1109,10 +1173,13 @@ class PluginCommands:
                 "max_file_size": "MB（0=不限），例如 20",
                 "exclude_text_on_media": "继承全局 / 开启 / 关闭",
                 "filter_spoiler_messages": "继承全局 / 开启 / 关闭",
+                "ai_filter_enabled": "继承全局 / 开启 / 关闭",
                 "strip_markdown_links": "继承全局 / 开启 / 关闭",
                 "ignore_global_filters": "true / false",
                 "filter_keywords": "关键词1,关键词2",
                 "filter_regex": "正则表达式",
+                "text_replace_rules": "多条规则用分号或换行分隔，例如：广告词 => ;regex:^书名：.*$ => （正则多行模式，^/$ 匹配行首尾）",
+                "text_replace_rules_text": "多行文本，每行一条规则，例如：\n广告词 => \nregex:^书名：.*$ => ",
                 "monitor_keywords": "关键词1,关键词2",
                 "monitor_regex": "正则表达式",
             }
@@ -1194,6 +1261,8 @@ class PluginCommands:
                     x.strip() for x in v.split(",") if x.strip()
                 ],
                 "filter_regex": str,
+                "text_replace_rules": self._parse_text_replace_rules,
+                "text_replace_rules_text": str,
                 "monitor_keywords": lambda v: [
                     x.strip() for x in v.split(",") if x.strip()
                 ],
@@ -1222,8 +1291,10 @@ class PluginCommands:
                         "filter_keywords",
                         "monitor_keywords",
                         "target_qq_sessions",
+                        "text_replace_rules",
+                        "text_replace_rules_text",
                     ):
-                        value = []
+                        value = "" if field == "text_replace_rules_text" else []
                     else:
                         value = handler(value_str)
                     old = ch_cfg.get(field, "<未设置>")
@@ -1307,6 +1378,8 @@ class PluginCommands:
                     x.strip() for x in v.split(",") if x.strip()
                 ],
                 "filter_regex": str,
+                "text_replace_rules": self._parse_text_replace_rules,
+                "text_replace_rules_text": str,
                 "monitor_keywords": lambda v: [
                     x.strip() for x in v.split(",") if x.strip()
                 ],
@@ -1329,8 +1402,10 @@ class PluginCommands:
                     "filter_keywords",
                     "monitor_keywords",
                     "target_qq_sessions",
+                    "text_replace_rules",
+                    "text_replace_rules_text",
                 ):
-                    value_preview = []
+                    value_preview = "" if field == "text_replace_rules_text" else []
                 else:
                     value_preview = field_handlers[field](value_str)
             except Exception as e:
@@ -1498,11 +1573,6 @@ class PluginCommands:
             "ai_filter_enabled": lambda v: (
                 v.lower() in ("true", "1", "yes", "y", "开启", "开", "是")
             ),
-            "ai_filter_base_url": str,
-            "ai_filter_allow_private_endpoint": lambda v: (
-                v.lower() in ("true", "1", "yes", "y", "开启", "开", "是")
-            ),
-            "ai_filter_api_key": str,
             "ai_filter_model": str,
             "ai_filter_prompt": str,
             "ai_filter_timeout": int,
@@ -1535,17 +1605,26 @@ class PluginCommands:
             ),
             "forward_types": lambda v: [x.strip() for x in v.split(",") if x.strip()],
             "filter_keywords": lambda v: [x.strip() for x in v.split(",") if x.strip()],
+            "text_replace_rules": self._parse_text_replace_rules,
+            "text_replace_rules_text": str,
             "monitor_keywords": lambda v: [
                 x.strip() for x in v.split(",") if x.strip()
             ],
             "target_qq_sessions": self._parse_qq_targets,
         }
 
-        if field not in field_handlers:
+        channel_only_fields = {"text_replace_rules", "text_replace_rules_text"}
+        if field not in field_handlers or (field in channel_only_fields and is_global):
             help_text = self.show_set_help_for_target(target)
+            extra_hint = (
+                "\n说明：替换净化规则为频道专属字段，请对具体频道设置，"
+                "例如 /tg set @频道名 text_replace_rules ..."
+                if field in channel_only_fields and is_global
+                else ""
+            )
             yield event.plain_result(
                 f"❌ 不支持的字段：{field}\n\n"
-                f"当前目标（{target}）支持的字段如下：\n\n{help_text}"
+                f"当前目标（{target}）支持的字段如下：\n\n{help_text}{extra_hint}"
             )
             return
 
@@ -1558,6 +1637,17 @@ class PluginCommands:
 
         handler = field_handlers[field]
 
+        # 频道级三态字段（继承全局/开启/关闭）：不能复用全局的布尔强转
+        # handler，否则 “继承全局” 会被静默转成 False。
+        channel_tri_state_fields = {
+            "ai_filter_enabled",
+            "exclude_text_on_media",
+            "filter_spoiler_messages",
+            "strip_markdown_links",
+        }
+        if not is_global and field in channel_tri_state_fields:
+            handler = self._parse_tri_state
+
         raw_lower = value_str.strip().lower()
         is_clear_cmd = raw_lower in ("[]", "清空", "clear", "none", "empty", "null")
 
@@ -1567,8 +1657,10 @@ class PluginCommands:
             "monitor_keywords",
             "qr_risk_keywords",
             "target_qq_sessions",
+            "text_replace_rules",
+            "text_replace_rules_text",
         ):
-            value = []
+            value = "" if field == "text_replace_rules_text" else []
         else:
             try:
                 value = handler(value_str)
@@ -1613,16 +1705,8 @@ class PluginCommands:
                 return "<未设置>"
             return str(v)
 
-        old_display = (
-            self.mask_sensitive(old, field)
-            if field == "ai_filter_api_key"
-            else pretty(old)
-        )
-        new_display = (
-            self.mask_sensitive(value, field)
-            if field == "ai_filter_api_key"
-            else pretty(value)
-        )
+        old_display = pretty(old)
+        new_display = pretty(value)
         yield event.plain_result(
             f"✅ 已修改 {target_name} 的 {field}\n"
             f"  旧值：{old_display}\n"

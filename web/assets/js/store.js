@@ -10,6 +10,7 @@ export const store = {
     expandedChannels: new Set(),
     channelGroups: {},
     expandedMergeRules: new Set(),
+    pendingReplaceRules: new Set(),
     qqGroups: [],
     qqGroupsAvailable: false,
     qqGroupsMessage: "",

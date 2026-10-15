@@ -309,18 +309,30 @@ class QQSender:
         return reply_media_label(msg)
 
     def _build_reply_preview(
-        self, reply_msg: Message, strip_links: bool = False
+        self,
+        reply_msg: Message,
+        strip_links: bool = False,
+        text_replace_rules: list | None = None,
     ) -> str:
-        return build_reply_preview(reply_msg, strip_links=strip_links)
+        return build_reply_preview(
+            reply_msg,
+            strip_links=strip_links,
+            text_replace_rules=text_replace_rules,
+        )
 
     async def _prefetch_reply_previews(
-        self, msgs: list[Message], src_channel: str, strip_links: bool = False
+        self,
+        msgs: list[Message],
+        src_channel: str,
+        strip_links: bool = False,
+        text_replace_rules: list | None = None,
     ) -> dict[int, str]:
         return await prefetch_reply_previews(
             msgs=msgs,
             src_channel=src_channel,
             client=getattr(self.downloader, "client", None),
             strip_links=strip_links,
+            text_replace_rules=text_replace_rules,
         )
 
     @staticmethod
@@ -455,7 +467,7 @@ class QQSender:
         self,
         effective_cfg: dict[str, object],
         involved_channels: list[str] | None,
-    ) -> tuple[bool, bool]:
+    ) -> tuple[bool, bool, list]:
         return resolve_text_processing_options(
             self.config,
             effective_cfg,
@@ -580,8 +592,8 @@ class QQSender:
         if effective_cfg is None:
             effective_cfg = {}
 
-        strip_links, exclude_text_on_media = self._resolve_text_processing_options(
-            effective_cfg, involved_channels
+        strip_links, exclude_text_on_media, text_replace_rules = (
+            self._resolve_text_processing_options(effective_cfg, involved_channels)
         )
         qq_targets = self._resolve_qq_targets(effective_cfg)
 
@@ -664,6 +676,7 @@ class QQSender:
             involved_channels=involved_channels,
             strip_links=strip_links,
             exclude_text_on_media=exclude_text_on_media,
+            text_replace_rules=text_replace_rules,
         )
         processed_batches = build_result.processed_batches
         target_failures = build_result.target_failures

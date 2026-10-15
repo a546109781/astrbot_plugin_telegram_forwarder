@@ -19,7 +19,11 @@ from astrbot.api.message_components import (
     Video,
 )
 
-from ...common.text_tools import clean_telegram_text, is_numeric_channel_id
+from ...common.text_tools import (
+    apply_text_replace_rules,
+    clean_telegram_text,
+    is_numeric_channel_id,
+)
 
 if TYPE_CHECKING:
     from .qq import QQSender
@@ -115,6 +119,7 @@ async def build_processed_batches(
     involved_channels: list[str] | None,
     strip_links: bool,
     exclude_text_on_media: bool,
+    text_replace_rules: list | None = None,
 ) -> BuildBatchesResult:
     """把 Telegram 逻辑批次转换为 QQ 可分发的批次数据。
 
@@ -153,13 +158,17 @@ async def build_processed_batches(
         header_added_before_batch = header_added
         try:
             reply_preview_cache = await sender._prefetch_reply_previews(
-                msgs, src_channel, strip_links=strip_links
+                msgs,
+                src_channel,
+                strip_links=strip_links,
+                text_replace_rules=text_replace_rules,
             )
             for i, msg in enumerate(msgs):
                 current_node_components = []
                 text_parts = []
                 if msg.text:
                     cleaned = clean_telegram_text(msg.text, strip_links=strip_links)
+                    cleaned = apply_text_replace_rules(cleaned, text_replace_rules)
                     if cleaned:
                         text_parts.append(cleaned)
 

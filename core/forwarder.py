@@ -12,6 +12,7 @@ from ..common.storage import Storage
 from ..common.text_tools import (
     is_numeric_channel_id,
     normalize_telegram_channel_name,
+    parse_text_replace_rules,
     to_telethon_entity,
 )
 from .client import TelegramClientWrapper
@@ -531,8 +532,25 @@ class Forwarder:
 
         return should_skip
 
-    async def _is_content_safety_matched(self, msg: Message) -> bool:
-        config = self.config.get("forward_config", {})
+    def _get_ai_provider(self):
+        """获取 AstrBot 当前启用的模型服务（Provider）。
+
+        供 AI 内容过滤复用；未配置或获取失败时返回 None（上层按放行处理）。
+        """
+        try:
+            return self.context.get_using_provider()
+        except Exception as exc:
+            logger.warning(f"[ContentSafety] 获取 AstrBot 模型服务失败: {exc}")
+            return None
+
+    async def _is_content_safety_matched(
+        self, msg: Message, effective_cfg: dict | None = None
+    ) -> bool:
+        # 频道级 ai_filter_enabled 覆盖全局开关；其余参数（提示词/超时/预算/
+        # 本地二维码过滤等）始终取全局 forward_config。
+        config = dict(self.config.get("forward_config", {}))
+        if effective_cfg is not None:
+            config["ai_filter_enabled"] = effective_cfg.get("ai_filter_enabled", False)
         if not config.get("ai_filter_enabled", False) and not config.get(
             "qr_filter_enabled", False
         ):
@@ -577,7 +595,9 @@ class Forwarder:
             return True
 
         content_safety_config = config
+        provider = None
         if config.get("ai_filter_enabled", False):
+            provider = self._get_ai_provider()
             remaining = getattr(
                 self,
                 "_content_safety_calls_remaining",
@@ -592,7 +612,10 @@ class Forwarder:
                 self._content_safety_calls_remaining = remaining - 1
 
         result = await self.content_safety_filter.check_ai(
-            self._build_message_search_text(msg), image_bytes, content_safety_config
+            self._build_message_search_text(msg),
+            image_bytes,
+            content_safety_config,
+            provider,
         )
         if result["filter"]:
             logger.info(f"[ContentSafety] 消息 {msg.id} 已过滤: {result['msg']}")
@@ -697,6 +720,12 @@ class Forwarder:
             and global_cfg.get("filter_qr_code_images", False)
         )
 
+        # AI 内容过滤（频道级三态覆盖，模型/提示词/超时等参数仍取全局）
+        ai_filter_enabled = channel_cfg.get("ai_filter_enabled", "继承全局") == "开启" or (
+            channel_cfg.get("ai_filter_enabled", "继承全局") == "继承全局"
+            and global_cfg.get("ai_filter_enabled", False)
+        )
+
         # 3.9 Markdown 链接剥离规则
         strip_global = global_cfg.get("strip_markdown_links", False)
         strip_channel_raw = channel_cfg.get("strip_markdown_links", "继承全局")
@@ -707,6 +736,15 @@ class Forwarder:
             strip_markdown_links = False
         else:
             strip_markdown_links = strip_global
+
+        # 3.10 内容替换净化规则（频道专属，按配置顺序应用）。
+        # 列表字段与文本域备选字段（text_replace_rules_text，每行一条）合并：
+        # 后者是 AstrBot 配置面板里更可靠的编辑入口，列表规则先执行。
+        text_replace_rules = parse_text_replace_rules(
+            channel_cfg.get("text_replace_rules", [])
+        ) + parse_text_replace_rules(
+            str(channel_cfg.get("text_replace_rules_text", "") or "")
+        )
 
         channel_specific_targets = channel_cfg.get("target_qq_sessions", [])
         if channel_specific_targets:  # 非空列表 → 使用频道专属配置
@@ -731,7 +769,9 @@ class Forwarder:
             "exclude_text_on_media": exclude_text_on_media,
             "filter_spoiler_messages": filter_spoiler_messages,
             "filter_qr_code_images": filter_qr_code_images,
+            "ai_filter_enabled": ai_filter_enabled,
             "strip_markdown_links": strip_markdown_links,
+            "text_replace_rules": text_replace_rules,
             "start_time": channel_cfg.get("start_time", ""),
             "msg_limit": channel_cfg.get("msg_limit", 20),
             "effective_target_qq_sessions": effective_qq_targets,
@@ -1465,7 +1505,9 @@ class Forwarder:
                             should_skip = self._is_text_filter_matched(m, effective_cfg)
 
                             if not should_skip:
-                                should_skip = await self._is_content_safety_matched(m)
+                                should_skip = await self._is_content_safety_matched(
+                                    m, effective_cfg
+                                )
 
                             if should_skip:
                                 individually_skipped_keys.add((channel, m.id))

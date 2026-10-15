@@ -63,11 +63,8 @@ export const FORWARD_GROUPS = [
       { key: "filter_qr_code_images", label: "过滤二维码图片", type: "bool", defaultValue: false },
       { key: "filter_keywords", label: "过滤关键词", type: "list", defaultValue: [] },
       { key: "filter_regex", label: "正则过滤", type: "text", defaultValue: "" },
-      { key: "ai_filter_enabled", label: "AI 内容过滤", type: "bool", defaultValue: false },
-      { key: "ai_filter_base_url", label: "AI Base URL", type: "text", placeholder: "https://api.example.com/v1", defaultValue: "" },
-      { key: "ai_filter_allow_private_endpoint", label: "允许本地/私网 AI 端点", type: "bool", defaultValue: false },
-      { key: "ai_filter_api_key", label: "AI API Key", type: "password", defaultValue: "" },
-      { key: "ai_filter_model", label: "AI 模型名", type: "text", defaultValue: "" },
+      { key: "ai_filter_enabled", label: "AI 内容过滤（AstrBot 模型）", type: "bool", defaultValue: false },
+      { key: "ai_filter_model", label: "AI 模型名", type: "text", placeholder: "留空使用 AstrBot 主模型", defaultValue: "" },
       {
         key: "ai_filter_prompt",
         label: "AI 过滤提示词",

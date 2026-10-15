@@ -32,7 +32,7 @@ def resolve_text_processing_options(
     config: Mapping[str, object],
     effective_cfg: Mapping[str, object],
     involved_channels: list[str] | None,
-) -> tuple[bool, bool]:
+) -> tuple[bool, bool, list]:
     """解析当前发送流程要使用的文本处理选项。
 
     Args:
@@ -41,16 +41,20 @@ def resolve_text_processing_options(
         involved_channels: 当前合并发送涉及的频道列表。
 
     Returns:
-        返回 ``(strip_links, exclude_text_on_media)``。
+        返回 ``(strip_links, exclude_text_on_media, text_replace_rules)``。
+        混合多频道大合并时无法归属频道专属替换规则，返回空规则列表。
     """
     if involved_channels and len(involved_channels) > 1:
         global_cfg = _as_str_object_mapping(config.get("forward_config"))
         strip_links = global_cfg.get("strip_markdown_links", False)
         exclude_text_on_media = global_cfg.get("exclude_text_on_media", False)
+        text_replace_rules: list = []
     else:
         exclude_text_on_media = effective_cfg.get("exclude_text_on_media", False)
         strip_links = effective_cfg.get("strip_markdown_links", False)
-    return bool(strip_links), bool(exclude_text_on_media)
+        rules = effective_cfg.get("text_replace_rules", [])
+        text_replace_rules = list(rules) if isinstance(rules, list) else []
+    return bool(strip_links), bool(exclude_text_on_media), text_replace_rules
 
 
 def resolve_qq_targets(
