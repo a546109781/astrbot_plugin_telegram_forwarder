@@ -119,14 +119,12 @@ def make_commands(
 
 
 class TestPluginCommandsDebug:
-    def test_ai_filter_api_key_is_masked(self):
+    def test_ai_filter_api_key_no_longer_special_cased(self):
+        """AI 过滤已复用 AstrBot Provider，直连密钥字段废弃，脱敏特判随之移除。"""
         commands = make_commands(qq_sender=FakeQQSender())
-        secret = "«redacted:sk-…»"
+        value = "not-a-secret-anymore"
 
-        masked = commands.mask_sensitive(secret, "ai_filter_api_key")
-
-        assert masked == "[REDACTED]"
-        assert secret not in masked
+        assert commands.mask_sensitive(value, "ai_filter_api_key") == value
 
     def test_proxy_url_with_invalid_port_is_redacted(self):
         commands = make_commands(qq_sender=FakeQQSender())
@@ -401,7 +399,8 @@ class TestPluginCommandsDebug:
         commands.context._star_manager.reload.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_set_global_ai_key_never_echoes_secret(self) -> None:
+    async def test_set_global_ai_key_is_rejected_as_removed_field(self) -> None:
+        """直连 AI 端点密钥已废弃：/tg set 应拒绝该字段且不落盘、不回显。"""
         commands = make_commands(qq_sender=FakeQQSender())
         commands.config["forward_config"] = {}
         commands.context._star_manager.reload = AsyncMock(return_value=(True, None))
@@ -414,9 +413,9 @@ class TestPluginCommandsDebug:
         ):
             results.append(result)
 
-        assert commands.config["forward_config"]["ai_filter_api_key"] == secret
+        assert "不支持的字段" in results[0]
+        assert "ai_filter_api_key" not in commands.config["forward_config"]
         assert secret not in "\n".join(results)
-        assert "[REDACTED]" in results[0]
 
 
 class TestPluginCommandsClearQueue:

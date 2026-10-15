@@ -705,16 +705,21 @@ def test_save_config_rejects_unpaired_proxy_credentials(web_admin):
     web_admin.plugin.config.save_config.assert_not_called()
 
 
-def test_get_config_masks_ai_filter_key(web_admin):
+def test_get_config_strips_legacy_ai_endpoint_keys(web_admin):
     web_admin.plugin.config["forward_config"] = {
+        "ai_filter_base_url": "https://api.example.com/v1",
         "ai_filter_api_key": "sk-real-secret-key",
+        "ai_filter_allow_private_endpoint": True,
         "ai_filter_enabled": True,
     }
 
     result = asyncio.run(web_admin.server.get_config())
 
     fwd = result["config"]["forward_config"]
-    assert fwd["ai_filter_api_key"] == "[REDACTED]"
+    assert "ai_filter_api_key" not in fwd
+    assert "ai_filter_base_url" not in fwd
+    assert "ai_filter_allow_private_endpoint" not in fwd
+    assert "sk-real-secret-key" not in str(result)
     assert fwd["ai_filter_enabled"] is True
 
 
@@ -814,17 +819,18 @@ def test_proxy_test_placeholder_uses_existing_password(web_admin):
     assert proxy_config["password"] == "secret"
 
 
-def test_export_config_masks_ai_filter_key(web_admin):
+def test_export_config_strips_legacy_ai_endpoint_keys(web_admin):
     web_admin.plugin.config["forward_config"] = {
         "ai_filter_api_key": "sk-export-secret",
     }
 
     result = asyncio.run(web_admin.server.export_config())
 
-    assert result["config"]["forward_config"]["ai_filter_api_key"] == "[REDACTED]"
+    assert "ai_filter_api_key" not in result["config"]["forward_config"]
+    assert "sk-export-secret" not in str(result)
 
 
-def test_save_config_placeholder_preserves_ai_filter_key(web_admin):
+def test_save_config_drops_legacy_ai_endpoint_keys(web_admin):
     web_admin.plugin.config["forward_config"] = {
         "ai_filter_api_key": "sk-old-secret",
         "ai_filter_enabled": False,
@@ -835,7 +841,7 @@ def test_save_config_placeholder_preserves_ai_filter_key(web_admin):
             {
                 "config": {
                     "forward_config": {
-                        "ai_filter_api_key": "[REDACTED]",
+                        "ai_filter_api_key": "whatever",
                         "ai_filter_enabled": True,
                     }
                 }
@@ -844,7 +850,7 @@ def test_save_config_placeholder_preserves_ai_filter_key(web_admin):
     )
 
     fwd = web_admin.plugin.config["forward_config"]
-    assert fwd["ai_filter_api_key"] == "sk-old-secret"
+    assert "ai_filter_api_key" not in fwd
     assert fwd["ai_filter_enabled"] is True
 
 

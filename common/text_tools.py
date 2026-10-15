@@ -1,5 +1,12 @@
 import re
 
+from astrbot.api import logger
+
+# 替换规则字符串中「匹配内容」与「替换为」的分隔符
+TEXT_REPLACE_SEPARATOR = "=>"
+# 正则规则前缀（命中任一前缀即视为正则替换，其余按普通文本替换处理）
+TEXT_REPLACE_REGEX_PREFIXES = ("regex:", "正则:")
+
 
 def normalize_telegram_channel_name(raw: str) -> str:
     """标准化频道用户名、t.me 链接或数字 ID。
@@ -93,3 +100,139 @@ def clean_telegram_text(text: str, strip_links: bool = False) -> str:
         text = re.sub(r"\[(.*?)\]\((.*?)\)", r"\1: \2", text)
 
     return text.strip()
+
+
+def parse_text_replace_rules(raw_rules: object) -> list[dict]:
+    """把配置中的替换规则字符串列表解析为结构化规则。
+
+    规则格式（一条一行）：
+    - 普通替换：``匹配内容 => 替换为``
+    - 正则替换：``regex:正则表达式 => 替换为`` 或 ``正则:正则表达式 => 替换为``
+
+    匹配内容中不能包含 ``=>``（按第一个 => 分隔）；替换为可为空（表示删除匹配内容）。
+    正则规则的替换为支持 Python re 反向引用（如 ``\\1``）。
+    非法条目会被跳过并记录日志，不影响其他规则。
+
+    Args:
+        raw_rules: 配置里的规则列表（容忍 list/str/None 等各种形态）。
+
+    Returns:
+        结构化规则列表 ``[{"type": "plain"|"regex", "pattern": str, "replacement": str}]``，
+        保持配置中的先后顺序。
+    """
+    if not raw_rules:
+        return []
+    if isinstance(raw_rules, str):
+        raw_rules = raw_rules.splitlines()
+    if not isinstance(raw_rules, (list, tuple)):
+        return []
+
+    rules: list[dict] = []
+    for raw in raw_rules:
+        line = str(raw or "").strip()
+        if not line:
+            continue
+
+        rule_type = "plain"
+        lowered = line.lower()
+        for prefix in TEXT_REPLACE_REGEX_PREFIXES:
+            if lowered.startswith(prefix):
+                rule_type = "regex"
+                line = line[len(prefix) :].strip()
+                break
+
+        if TEXT_REPLACE_SEPARATOR not in line:
+            logger.warning(
+                f"[TextReplace] 替换规则缺少 '{TEXT_REPLACE_SEPARATOR}' 分隔符，已跳过: {raw!r}"
+            )
+            continue
+
+        pattern, replacement = line.split(TEXT_REPLACE_SEPARATOR, 1)
+        pattern = pattern.strip()
+        replacement = replacement.strip()
+        if not pattern:
+            logger.warning(f"[TextReplace] 替换规则匹配内容为空，已跳过: {raw!r}")
+            continue
+
+        if rule_type == "regex":
+            try:
+                re.compile(pattern)
+            except re.error as e:
+                logger.error(
+                    f"[TextReplace] 替换规则正则表达式非法，已跳过: {pattern!r} ({e})"
+                )
+                continue
+
+        rules.append(
+            {"type": rule_type, "pattern": pattern, "replacement": replacement}
+        )
+    return rules
+
+
+def apply_text_replace_rules(
+    text: str,
+    rules: list[dict] | None,
+    rule_reports: list | None = None,
+) -> str:
+    """按顺序对文本应用替换净化规则。
+
+    正则规则默认以 ``re.MULTILINE`` 多行模式执行：``^`` / ``$`` 匹配行首行尾，
+    需要匹配整段文本首尾时使用 ``\\A`` / ``\\Z``。
+
+    Args:
+        text: 待处理的文本（通常是 ``clean_telegram_text`` 清洗后的结果）。
+        rules: ``parse_text_replace_rules`` 解析出的结构化规则。
+        rule_reports: 可选的输出列表；传入时每条规则会追加一份命中报告
+            ``{"type", "pattern", "replacement", "matched", "count", "error"}``，
+            供 Web 预览调试使用。生产路径不传，行为与之前完全一致。
+
+    Returns:
+        处理后的文本；规则为空或执行异常时原样返回。
+    """
+    if not text or not rules:
+        return text
+
+    for rule in rules:
+        rule_type = rule.get("type", "plain")
+        pattern = rule.get("pattern", "")
+        replacement = rule.get("replacement", "")
+        if not pattern:
+            continue
+        report = None
+        if rule_reports is not None:
+            report = {
+                "type": rule_type,
+                "pattern": pattern,
+                "replacement": replacement,
+                "matched": False,
+                "count": 0,
+                "error": "",
+            }
+            rule_reports.append(report)
+        try:
+            if rule_type == "regex":
+                # 多行模式：频道消息是多行文本，^ / $ 按行首行尾匹配更符合
+                # “按行净化”的常见意图；需要整段首尾时可用 \A \Z。
+                if report is not None:
+                    try:
+                        report["count"] = len(
+                            re.findall(pattern, text, flags=re.MULTILINE)
+                        )
+                    except re.error:
+                        report["count"] = 0
+                text = re.sub(pattern, replacement, text, flags=re.MULTILINE)
+            else:
+                if report is not None:
+                    report["count"] = text.count(pattern)
+                text = text.replace(pattern, replacement)
+            if report is not None:
+                report["matched"] = report["count"] > 0
+        except re.error as e:
+            # 解析阶段已校验过正则；此处兜底捕获替换串中的非法转义（如 \q）
+            logger.error(
+                f"[TextReplace] 应用替换规则失败，已跳过: {pattern!r} ({e})"
+            )
+            if report is not None:
+                report["error"] = str(e)
+            continue
+    return text

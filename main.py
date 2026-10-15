@@ -241,6 +241,12 @@ class Main(star.Star):
             ("config", self.dashboard_get_config, ["GET"], "读取配置"),
             ("config", self.dashboard_save_config, ["POST"], "保存配置"),
             ("proxy/test", self.dashboard_proxy_test, ["POST"], "测试代理连接"),
+            (
+                "text-replace/preview",
+                self.dashboard_text_replace_preview,
+                ["POST"],
+                "预览替换净化规则",
+            ),
             ("qq/groups", self.dashboard_qq_groups, ["GET"], "加载 QQ 群列表"),
             (
                 "qq/groups/refresh",
@@ -501,6 +507,12 @@ class Main(star.Star):
         payload = await self._dashboard_payload()
         return await self._dashboard_call(
             lambda: self._ensure_web_admin_server().test_proxy(payload)
+        )
+
+    async def dashboard_text_replace_preview(self):
+        payload = await self._dashboard_payload()
+        return await self._dashboard_call(
+            lambda: self._ensure_web_admin_server().preview_text_replace(payload)
         )
 
     async def dashboard_qq_groups(self):

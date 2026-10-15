@@ -361,6 +361,69 @@
   background: var(--soft);
 }
 
+.replace-rules {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.replace-rules-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.replace-rules-actions {
+  display: inline-flex;
+  gap: 8px;
+}
+
+.replace-rules-list {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.replace-rule-row {
+  display: grid;
+  grid-template-columns: minmax(96px, auto) minmax(0, 1fr) auto minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.replace-rule-row select {
+  min-height: 40px;
+  font-weight: 700;
+}
+
+.replace-rule-arrow {
+  color: var(--primary);
+  font-weight: 900;
+}
+
+.replace-rule-remove {
+  min-width: 38px;
+  min-height: 38px;
+  padding: 0 10px;
+}
+
+.replace-rules-empty {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 8px;
+  background: var(--soft);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
 @keyframes channel-open {
   from {
     opacity: 0;
@@ -393,6 +456,18 @@
 
   .selector-toolbar {
     grid-template-columns: 1fr;
+  }
+
+  .replace-rule-row {
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  }
+
+  .replace-rule-row select {
+    grid-column: 1 / -1;
+  }
+
+  .replace-rule-row .replace-rule-remove {
+    grid-column: 1 / -1;
   }
 }
 

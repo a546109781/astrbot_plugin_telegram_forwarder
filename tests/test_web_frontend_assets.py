@@ -425,11 +425,10 @@ def test_forward_config_exposes_file_direct_link_base_url() -> None:
 def test_forward_config_exposes_ai_and_qr_filter_controls() -> None:
     required = (
         '"ai_filter_enabled"',
-        '"ai_filter_base_url"',
-        '"ai_filter_api_key"',
-        'type: "password"',
         '"ai_filter_model"',
         '"ai_filter_prompt"',
+        '"ai_filter_timeout"',
+        '"ai_filter_max_calls_per_cycle"',
         '"qr_filter_enabled"',
         '"qr_filter_mode"',
         '"qr_risk_keywords"',

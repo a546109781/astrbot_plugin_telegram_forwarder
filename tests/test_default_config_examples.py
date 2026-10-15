@@ -54,9 +54,12 @@ def test_default_content_safety_config_is_disabled_and_complete():
 
     assert items["ai_filter_enabled"]["default"] is False
     assert items["qr_filter_enabled"]["default"] is False
-    assert items["ai_filter_base_url"]["default"] == ""
-    assert items["ai_filter_api_key"]["default"] == ""
+    # AI 过滤复用 AstrBot Provider：直连端点配置键应彻底移除
+    assert "ai_filter_base_url" not in items
+    assert "ai_filter_api_key" not in items
+    assert "ai_filter_allow_private_endpoint" not in items
     assert items["ai_filter_model"]["default"] == ""
+    assert items["ai_filter_timeout"]["default"] == 20
     assert "NSFW" in items["ai_filter_prompt"]["default"]
     assert "二维码" in items["ai_filter_prompt"]["default"]
     assert "\\n" not in items["ai_filter_prompt"]["default"]

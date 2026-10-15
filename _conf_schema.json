@@ -212,6 +212,19 @@
                         "default": "",
                         "hint": "Python 正则表达式过滤"
                     },
+                    "text_replace_rules": {
+                        "type": "list",
+                        "item_type": "string",
+                        "description": "内容替换净化规则",
+                        "default": [],
+                        "hint": "每条一行：普通替换写「匹配内容 => 替换为」；正则替换写「regex:正则表达式 => 替换为」（替换为支持 \\1 反向引用，留空表示删除）。正则默认多行模式：^ 和 $ 匹配行首行尾，整段首尾用 \\A \\Z。按顺序应用于转发文本，只在本频道消息上生效。推荐在插件自带 Web 管理页中编辑"
+                    },
+                    "text_replace_rules_text": {
+                        "type": "text",
+                        "description": "替换净化规则（文本域备选）",
+                        "default": "",
+                        "hint": "AstrBot 配置面板备用编辑入口：每行一条规则，格式与上面的规则列表完全相同，两处配置会合并生效（列表规则先执行）。插件 Web 管理页的规则编辑器不编辑此字段"
+                    },
                     "filter_spoiler_messages": {
                         "description": "过滤遮罩/剧透消息",
                         "type": "string",
@@ -233,6 +246,17 @@
                         ],
                         "default": "继承全局",
                         "hint": "开启后，含二维码的 Telegram 图片将被跳过；相册中任一图片命中时跳过整个相册"
+                    },
+                    "ai_filter_enabled": {
+                        "description": "AI 内容过滤",
+                        "type": "string",
+                        "options": [
+                            "继承全局",
+                            "开启",
+                            "关闭"
+                        ],
+                        "default": "继承全局",
+                        "hint": "开启后该频道的消息发送前交由 AstrBot 已配置的模型做内容审查；模型与提示词等参数仍使用全局配置"
                     },
                     "strip_markdown_links": {
                         "description": "剥离 Markdown 链接，只保留文本",
@@ -503,31 +527,13 @@
                 "type": "bool",
                 "description": "AI 内容过滤",
                 "default": false,
-                "hint": "发送前使用 OpenAI 兼容视觉模型判断文字和图片；接口异常时默认放行"
-            },
-            "ai_filter_base_url": {
-                "type": "string",
-                "description": "AI Base URL",
-                "default": "",
-                "hint": "OpenAI 兼容接口基址，例如 https://api.openai.com/v1"
-            },
-            "ai_filter_allow_private_endpoint": {
-                "type": "bool",
-                "description": "允许本地/私网 AI 端点",
-                "default": false,
-                "hint": "仅在使用 Ollama、vLLM 等受信任的本地模型时开启；默认拒绝 IP 地址端点以避免配置被篡改后探测内网"
-            },
-            "ai_filter_api_key": {
-                "type": "string",
-                "description": "AI API Key",
-                "default": "",
-                "hint": "仅用于调用内容过滤模型，请勿在日志或截图中泄露"
+                "hint": "发送前使用 AstrBot 已配置的模型（Web 面板-配置-服务提供商）判断文字和图片；模型未配置或调用异常时默认放行"
             },
             "ai_filter_model": {
                 "type": "string",
                 "description": "AI 模型名",
                 "default": "",
-                "hint": "需支持图片输入，例如兼容 OpenAI Vision 的模型"
+                "hint": "留空使用 AstrBot 当前启用的主模型；填写则以该模型名发起请求（需所选服务商支持，且支持图片输入）"
             },
             "ai_filter_prompt": {
                 "type": "string",

@@ -2360,7 +2360,11 @@ class TestSendHelperExtraction:
             "exclude_text_on_media": True,
         }
 
-        strip_links, exclude_text_on_media = sender._resolve_text_processing_options(
+        (
+            strip_links,
+            exclude_text_on_media,
+            _text_replace_rules,
+        ) = sender._resolve_text_processing_options(
             effective_cfg, ["channel-a", "channel-b"]
         )
 
@@ -2381,7 +2385,11 @@ class TestSendHelperExtraction:
             "exclude_text_on_media": True,
         }
 
-        strip_links, exclude_text_on_media = sender._resolve_text_processing_options(
+        (
+            strip_links,
+            exclude_text_on_media,
+            _text_replace_rules,
+        ) = sender._resolve_text_processing_options(
             effective_cfg, ["channel-a"]
         )
 
@@ -2402,7 +2410,11 @@ class TestSendHelperExtraction:
             "exclude_text_on_media": True,
         }
 
-        strip_links, exclude_text_on_media = qq_module.resolve_text_processing_options(
+        (
+            strip_links,
+            exclude_text_on_media,
+            _text_replace_rules,
+        ) = qq_module.resolve_text_processing_options(
             config,
             effective_cfg,
             ["channel-a", "channel-b"],

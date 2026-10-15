@@ -1,6 +1,5 @@
 apscheduler
-aiohttp
-telethon>=1.42.0,<1.43.0
+telethon>=1.42.0
 pysocks
 flask
 pillow

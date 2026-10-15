@@ -1,7 +1,6 @@
 import asyncio
 import importlib.util
 import json
-import socket
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -12,10 +11,6 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = ROOT / "core" / "filters" / "content_safety.py"
 MODULE_NAME = "astrbot_plugin_telegram_forwarder.core.filters.content_safety"
-
-
-async def resolve_public_example(_hostname: str, _port: int):
-    return [(socket.AF_INET, "93.184.216.34")]
 
 
 def load_module():
@@ -81,51 +76,6 @@ def test_ai_prompt_always_appends_json_contract():
     assert "只返回 JSON 对象" in prompt
     assert '"filter": true/false' in prompt
     assert '"msg": "判断原因"' in prompt
-
-
-def test_openai_url_normalization():
-    module = load_module()
-
-    assert module.openai_chat_url("https://api.example.com/v1") == (
-        "https://api.example.com/v1/chat/completions"
-    )
-    assert module.openai_chat_url("https://api.example.com/v1/") == (
-        "https://api.example.com/v1/chat/completions"
-    )
-    assert module.openai_chat_url("https://api.example.com/v1/chat/completions") == (
-        "https://api.example.com/v1/chat/completions"
-    )
-
-
-@pytest.mark.parametrize(
-    "base_url",
-    [
-        "",
-        "ftp://example.com/v1",
-        "file:///etc/passwd",
-        "https://127.0.0.1/v1",
-        "https://localhost/v1",
-        "https://localhost./v1",
-        "http://localhost:11434/v1",
-        "https://metadata.google.internal/v1",
-    ],
-)
-def test_openai_url_rejects_unsafe_endpoints_by_default(base_url):
-    module = load_module()
-
-    with pytest.raises(ValueError):
-        module.openai_chat_url(base_url)
-
-
-def test_openai_url_allows_private_endpoint_only_when_enabled():
-    module = load_module()
-
-    assert module.openai_chat_url("http://127.0.0.1:11434/v1", True) == (
-        "http://127.0.0.1:11434/v1/chat/completions"
-    )
-    assert module.openai_chat_url("http://localhost:11434/v1", True) == (
-        "http://localhost:11434/v1/chat/completions"
-    )
 
 
 def test_image_data_url_uses_detected_mime_type():
@@ -319,127 +269,6 @@ def test_qr_decode_survives_image_without_draft(monkeypatch):
     assert [name for name, _ in calls] == ["seek", "copy", "thumbnail"]
 
 
-def test_ai_request_contains_text_image_and_forced_json_contract():
-    module = load_module()
-    response = SimpleNamespace(
-        status=200,
-        json=AsyncMock(
-            return_value={
-                "choices": [
-                    {"message": {"content": '{"filter": true, "msg": "网贷二维码"}'}}
-                ]
-            }
-        ),
-        text=AsyncMock(return_value=""),
-    )
-    response_context = MagicMock()
-    response_context.__aenter__.return_value = response
-    session = MagicMock()
-    session.post.return_value = response_context
-    session_context = MagicMock()
-    session_context.__aenter__.return_value = session
-    content_filter = module.ContentSafetyFilter(
-        session_factory=lambda **_: session_context,
-        address_resolver=resolve_public_example,
-    )
-    config = {
-        "ai_filter_enabled": True,
-        "ai_filter_base_url": "https://api.example.com/v1",
-        "ai_filter_api_key": "test-key",
-        "ai_filter_model": "vision-model",
-        "ai_filter_prompt": "过滤不良推广",
-        "ai_filter_timeout": 15,
-    }
-
-    result = asyncio.run(content_filter.check_ai("消息正文", b"jpeg", config))
-
-    assert result == {"filter": True, "msg": "网贷二维码"}
-    _, kwargs = session.post.call_args
-    assert kwargs["headers"]["Authorization"] == "Bearer test-key"
-    assert kwargs["json"]["model"] == "vision-model"
-    assert kwargs["allow_redirects"] is False
-    messages = kwargs["json"]["messages"]
-    assert messages[0]["role"] == "system"
-    assert messages[0]["content"].startswith("过滤不良推广")
-    assert "只返回 JSON 对象" in messages[0]["content"]
-    assert messages[1]["role"] == "user"
-    content = messages[1]["content"]
-    assert content[0]["text"] == "消息正文"
-    assert content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
-
-
-def test_ai_failure_is_fail_open_without_secret_logging():
-    module = load_module()
-    session = MagicMock()
-    session.post.side_effect = RuntimeError("request failed with test-key")
-    session_context = MagicMock()
-    session_context.__aenter__.return_value = session
-    content_filter = module.ContentSafetyFilter(
-        session_factory=lambda **_: session_context,
-        address_resolver=resolve_public_example,
-    )
-    config = {
-        "ai_filter_enabled": True,
-        "ai_filter_base_url": "https://api.example.com/v1",
-        "ai_filter_api_key": "test-key",
-        "ai_filter_model": "model",
-        "ai_filter_prompt": "filter",
-    }
-
-    result = asyncio.run(content_filter.check_ai("text", None, config))
-
-    assert result == {"filter": False, "msg": "AI 过滤不可用，已放行"}
-    logged = " ".join(str(call) for call in module.logger.warning.call_args_list)
-    assert "test-key" not in logged
-
-
-def test_ai_invalid_timeout_uses_default_instead_of_crashing():
-    module = load_module()
-    session = MagicMock()
-    session.post.side_effect = RuntimeError("offline")
-    session_context = MagicMock()
-    session_context.__aenter__.return_value = session
-    content_filter = module.ContentSafetyFilter(
-        session_factory=lambda **_: session_context,
-        address_resolver=resolve_public_example,
-    )
-    config = {
-        "ai_filter_enabled": True,
-        "ai_filter_base_url": "https://api.example.com/v1",
-        "ai_filter_api_key": "test-key",
-        "ai_filter_model": "model",
-        "ai_filter_timeout": "invalid",
-    }
-
-    result = asyncio.run(content_filter.check_ai("text", None, config))
-
-    assert result == {"filter": False, "msg": "AI 过滤不可用，已放行"}
-
-
-def test_ai_rejects_domain_that_resolves_to_private_address():
-    module = load_module()
-
-    async def resolve_private(_hostname: str, _port: int):
-        return [(socket.AF_INET, "127.0.0.1")]
-
-    session_factory = MagicMock()
-    content_filter = module.ContentSafetyFilter(
-        session_factory=session_factory,
-        address_resolver=resolve_private,
-    )
-    config = {
-        "ai_filter_enabled": True,
-        "ai_filter_base_url": "https://private.example/v1",
-        "ai_filter_api_key": "test-key",
-        "ai_filter_model": "model",
-    }
-
-    result = asyncio.run(content_filter.check_ai("text", None, config))
-
-    assert result == {"filter": False, "msg": "AI 过滤不可用，已放行"}
-    session_factory.assert_not_called()
-
-
 def test_combined_filter_short_circuits_ai_when_qr_matches():
     module = load_module()
     content_filter = module.ContentSafetyFilter(
@@ -475,4 +304,151 @@ def test_combined_filter_uses_ai_after_qr_passes():
     result = asyncio.run(content_filter.check("text", b"image", config))
 
     assert result == {"filter": True, "msg": "AI 判断为 NSFW"}
-    content_filter.check_ai.assert_awaited_once_with("text", b"image", config)
+    content_filter.check_ai.assert_awaited_once_with("text", b"image", config, None)
+
+
+class _ProviderResponse:
+    def __init__(self, text):
+        self.completion_text = text
+
+
+class _Provider:
+    def __init__(self, ret=None, exc=None, sleep=0.0, reject_model=False):
+        self.ret, self.exc, self.sleep, self.reject_model = ret, exc, sleep, reject_model
+        self.calls = []
+
+    async def text_chat(self, **kwargs):
+        self.calls.append(kwargs)
+        if self.sleep:
+            await asyncio.sleep(self.sleep)
+        if self.reject_model and "model" in kwargs:
+            raise TypeError("unexpected keyword argument 'model'")
+        if self.exc:
+            raise self.exc
+        return _ProviderResponse(self.ret)
+
+
+_BASE_AI_CONFIG = {
+    "ai_filter_enabled": True,
+    "ai_filter_model": "vision-model",
+    "ai_filter_prompt": "过滤不良推广",
+    "ai_filter_timeout": 10,
+}
+
+
+def test_ai_uses_provider_text_chat_with_contract_and_image():
+    module = load_module()
+    content_filter = module.ContentSafetyFilter()
+    provider = _Provider(ret='{"filter": true, "msg": "网贷二维码"}')
+
+    result = asyncio.run(
+        content_filter.check_ai("消息正文", b"jpeg", dict(_BASE_AI_CONFIG), provider)
+    )
+
+    assert result == {"filter": True, "msg": "网贷二维码"}
+    kwargs = provider.calls[0]
+    assert kwargs["prompt"] == "消息正文"
+    assert kwargs["model"] == "vision-model"
+    assert kwargs["contexts"] == []
+    assert kwargs["system_prompt"].startswith("过滤不良推广")
+    assert "只返回 JSON 对象" in kwargs["system_prompt"]
+    assert kwargs["image_urls"][0].startswith("data:image/jpeg;base64,")
+
+
+def test_ai_omits_model_kwarg_when_unset():
+    module = load_module()
+    content_filter = module.ContentSafetyFilter()
+    provider = _Provider(ret='{"filter": false, "msg": "放行"}')
+    config = dict(_BASE_AI_CONFIG)
+    config["ai_filter_model"] = ""
+
+    asyncio.run(content_filter.check_ai("text", None, config, provider))
+
+    assert "model" not in provider.calls[0]
+
+
+def test_ai_model_kwarg_falls_back_when_provider_rejects_it():
+    module = load_module()
+    content_filter = module.ContentSafetyFilter()
+    provider = _Provider(
+        ret='{"filter": false, "msg": "放行"}', reject_model=True
+    )
+
+    result = asyncio.run(
+        content_filter.check_ai("text", None, dict(_BASE_AI_CONFIG), provider)
+    )
+
+    assert result == {"filter": False, "msg": "放行"}
+    assert "model" not in provider.calls[-1]
+
+
+def test_ai_missing_provider_is_fail_open():
+    module = load_module()
+    content_filter = module.ContentSafetyFilter()
+
+    result = asyncio.run(
+        content_filter.check_ai("text", None, dict(_BASE_AI_CONFIG), None)
+    )
+
+    assert result == {"filter": False, "msg": "AI 模型服务不可用（未配置 Provider），已放行"}
+
+
+def test_ai_provider_failure_is_fail_open():
+    module = load_module()
+    content_filter = module.ContentSafetyFilter()
+    provider = _Provider(exc=RuntimeError("provider offline"))
+
+    result = asyncio.run(
+        content_filter.check_ai("text", None, dict(_BASE_AI_CONFIG), provider)
+    )
+
+    assert result == {"filter": False, "msg": "AI 过滤不可用，已放行"}
+
+
+def test_ai_timeout_is_fail_open():
+    module = load_module()
+    content_filter = module.ContentSafetyFilter()
+    provider = _Provider(sleep=5.0)
+    config = dict(_BASE_AI_CONFIG)
+    config["ai_filter_timeout"] = 1
+
+    result = asyncio.run(content_filter.check_ai("text", None, config, provider))
+
+    assert result == {"filter": False, "msg": "AI 过滤超时，已放行"}
+
+
+def test_ai_invalid_timeout_uses_default_instead_of_crashing():
+    module = load_module()
+    content_filter = module.ContentSafetyFilter()
+    provider = _Provider(ret='{"filter": false, "msg": "放行"}')
+    config = dict(_BASE_AI_CONFIG)
+    config["ai_filter_timeout"] = "invalid"
+
+    result = asyncio.run(content_filter.check_ai("text", None, config, provider))
+
+    assert result == {"filter": False, "msg": "放行"}
+
+
+def test_ai_malformed_provider_output_is_fail_open():
+    module = load_module()
+    content_filter = module.ContentSafetyFilter()
+    provider = _Provider(ret="这不是 JSON")
+
+    result = asyncio.run(
+        content_filter.check_ai("text", None, dict(_BASE_AI_CONFIG), provider)
+    )
+
+    assert result == {"filter": False, "msg": "AI 过滤不可用，已放行"}
+
+
+def test_ai_disabled_skips_provider_call():
+    module = load_module()
+    content_filter = module.ContentSafetyFilter()
+    provider = _Provider(ret='{"filter": true, "msg": "不应被调用"}')
+    config = dict(_BASE_AI_CONFIG)
+    config["ai_filter_enabled"] = False
+
+    result = asyncio.run(content_filter.check_ai("text", None, config, provider))
+
+    assert result == {"filter": False, "msg": "AI 过滤未启用"}
+    assert provider.calls == []

@@ -106,6 +106,8 @@ mock_text_tools.is_numeric_channel_id = lambda s: str(s).lstrip("-").isdigit()
 mock_text_tools.to_telethon_entity = lambda s: (
     int(s) if str(s).lstrip("-").isdigit() else s
 )
+mock_text_tools.apply_text_replace_rules = lambda text, rules, **kw: text
+mock_text_tools.parse_text_replace_rules = lambda raw: []
 
 mock_downloader = MagicMock()
 mock_downloader.MediaDownloader = type("MediaDownloader", (), {})

@@ -1,7 +1,6 @@
 import asyncio
 import inspect
 import logging
-import re
 import shutil
 import sqlite3
 import sys
@@ -9,7 +8,6 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse, urlunparse
 
 import socks
-import telethon
 from astrbot.api import AstrBotConfig, logger
 from telethon import TelegramClient
 
@@ -71,33 +69,6 @@ class TelegramClientWrapper:
         error_text = f"{exc!r} {exc}".casefold()
         return (
             "not enough values to unpack" in error_text and "expected 6" in error_text
-        )
-
-    @staticmethod
-    def _telethon_version_text() -> str:
-        version = getattr(telethon, "__version__", "")
-        return version if isinstance(version, str) else ""
-
-    @staticmethod
-    def _telethon_version_tuple(version: str) -> tuple[int, int, int] | None:
-        match = re.match(r"^\s*(\d+)\.(\d+)(?:\.(\d+))?", version)
-        if not match:
-            return None
-        major, minor, patch = match.groups()
-        return int(major), int(minor), int(patch or 0)
-
-    @classmethod
-    def _is_unsupported_telethon_version(cls) -> bool:
-        version_tuple = cls._telethon_version_tuple(cls._telethon_version_text())
-        return version_tuple is not None and version_tuple >= (1, 43, 0)
-
-    @classmethod
-    def _log_unsupported_telethon_version(cls) -> None:
-        version_text = cls._telethon_version_text() or "unknown"
-        logger.error(
-            f"[Client] 当前 Telethon 版本 {version_text} 与本插件 session schema 不兼容。"
-            " 请在 AstrBot 插件环境中重装依赖，使 telethon 满足 >=1.42.0,<1.43.0；"
-            ' 例如: pip install --upgrade --force-reinstall "telethon>=1.42.0,<1.43.0"',
         )
 
     @staticmethod
@@ -248,6 +219,17 @@ class TelegramClientWrapper:
             return fallback_columns
 
     @staticmethod
+    def _telethon_session_db_version() -> int | None:
+        """读取已安装 Telethon 的 session 数据库版本号（CURRENT_VERSION）。"""
+        try:
+            from telethon.sessions.sqlite import CURRENT_VERSION
+
+            return int(CURRENT_VERSION)
+        except Exception as e:
+            logger.debug(f"[Client] 读取 Telethon session 版本号失败: {e}")
+            return None
+
+    @staticmethod
     def _telethon_reads_takeout_id_as_tmp_key() -> bool:
         """Detect Telethon versions whose read order treats takeout_id as tmp_auth_key."""
         try:
@@ -360,6 +342,16 @@ class TelegramClientWrapper:
                 rows,
             )
             conn.execute(f"DROP TABLE {backup_table}")
+            # 将 version 表对齐到已安装 Telethon 的 CURRENT_VERSION。
+            # 只改表结构不对齐版本号会留下“版本已达标但列数不匹配”的脏状态，
+            # 导致 Telethon 跳过自动升级并在解包 sessions 行时直接报错。
+            desired_version = TelegramClientWrapper._telethon_session_db_version()
+            if desired_version is not None:
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS version (version integer primary key)"
+                )
+                conn.execute("DELETE FROM version")
+                conn.execute("INSERT INTO version VALUES (?)", (desired_version,))
             conn.commit()
         except Exception:
             migration_failed = True
@@ -493,11 +485,6 @@ class TelegramClientWrapper:
 
         # 只有在配置完整时才创建客户端
         if api_id and api_hash:
-            if self._is_unsupported_telethon_version():
-                self._log_unsupported_telethon_version()
-                self.client = None
-                return
-
             # 会话文件路径：存储登录状态和缓存
             # 使用 .session 扩展名，Telethon 会自动添加
             session_path = self._session_path()
@@ -567,11 +554,10 @@ class TelegramClientWrapper:
                     **client_kwargs,
                 )
             except Exception as e:
-                if self._is_unsupported_session_schema_error(e):
-                    self._log_unsupported_telethon_version()
-                    self.client = None
-                    return
-                if not self._is_session_schema_error(e):
+                if not (
+                    self._is_session_schema_error(e)
+                    or self._is_unsupported_session_schema_error(e)
+                ):
                     raise
                 logger.warning(
                     f"[Client] 检测到 Telethon 会话 schema 不兼容，尝试备份并修复 {session_path}.session: {e}"
@@ -701,6 +687,13 @@ class TelegramClientWrapper:
         self._authorized = False
         get_auth_cache().pop(self._session_path(), None)
 
+    def has_credentials(self) -> bool:
+        """配置中的 api_id/api_hash 是否完整（用于区分“未配置”与“初始化失败”）。"""
+        return bool(
+            self.config
+            and self.config.get("api_id")
+            and self.config.get("api_hash")
+        )
     @staticmethod
     def _close_client_session(client) -> None:
         """同步关闭 Telethon client 的 SQLite session，释放文件锁。"""

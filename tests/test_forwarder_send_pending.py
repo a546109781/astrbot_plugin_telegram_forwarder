@@ -195,6 +195,7 @@ def load_forwarder_module():
             normalize_telegram_channel_name=lambda value: str(value).lstrip("@"),
             to_telethon_entity=lambda value: value,
             is_numeric_channel_id=lambda value: str(value).lstrip("-").isdigit(),
+            parse_text_replace_rules=lambda raw: [],
         )
         _register_module(
             "astrbot_plugin_telegram_forwarder.core.client",
@@ -411,7 +412,7 @@ async def test_content_safety_downloads_photo_once_and_filters_match():
     assert result is True
     forwarder.client.download_media.assert_awaited_once_with(msg, file=bytes)
     forwarder.content_safety_filter.check_ai.assert_awaited_once_with(
-        "caption", b"image-bytes", config
+        "caption", b"image-bytes", config, None
     )
 
 
@@ -441,7 +442,7 @@ async def test_content_safety_large_photo_falls_back_to_text_only_ai():
 
     assert result is False
     forwarder.content_safety_filter.check_ai.assert_awaited_once_with(
-        "caption", None, config
+        "caption", None, config, None
     )
 
 
@@ -475,7 +476,7 @@ async def test_content_safety_analyzes_image_document():
     assert result is False
     forwarder.client.download_media.assert_awaited_once_with(msg, file=bytes)
     forwarder.content_safety_filter.check_ai.assert_awaited_once_with(
-        "", b"png", config
+        "", b"png", config, None
     )
 
 
@@ -501,7 +502,7 @@ async def test_content_safety_invalid_image_limit_falls_back_to_default():
 
     assert result is False
     forwarder.content_safety_filter.check_ai.assert_awaited_once_with(
-        "", b"jpeg", config
+        "", b"jpeg", config, None
     )
 
 
@@ -539,7 +540,7 @@ async def test_content_safety_skips_download_when_declared_image_is_too_large():
     assert result is False
     forwarder.client.download_media.assert_not_awaited()
     forwarder.content_safety_filter.check_ai.assert_awaited_once_with(
-        "caption", None, config
+        "caption", None, config, None
     )
 
 
@@ -569,7 +570,7 @@ async def test_content_safety_budget_keeps_local_qr_filter_active():
     result = await forwarder._is_content_safety_matched(msg)
 
     assert result is True
-    _, _, passed_config = forwarder.content_safety_filter.check_ai.await_args.args
+    _, _, passed_config, _ = forwarder.content_safety_filter.check_ai.await_args.args
     assert passed_config["ai_filter_enabled"] is False
     assert passed_config["qr_filter_enabled"] is True
 
@@ -1725,7 +1726,7 @@ async def test_content_safety_match_drops_entire_group():
         "has_exclusive_qq_sessions": False,
     }
     forwarder._is_content_safety_matched = AsyncMock(
-        side_effect=lambda msg: msg.id == 612
+        side_effect=lambda msg, effective_cfg=None: msg.id == 612
     )
     forwarder._send_sorted_messages_in_batches = AsyncMock()
     forwarder.client.get_messages = AsyncMock(
@@ -1792,7 +1793,7 @@ async def test_send_pending_drops_entire_album_when_one_image_contains_qr_code()
         "has_exclusive_qq_sessions": False,
     }
     forwarder.downloader.contains_qr_code = AsyncMock(
-        side_effect=lambda msg: msg.id == 612
+        side_effect=lambda msg, effective_cfg=None: msg.id == 612
     )
     forwarder._send_sorted_messages_in_batches = AsyncMock()
     forwarder.client.get_messages = AsyncMock(

@@ -371,7 +371,8 @@ def test_init_client_does_not_block_older_telethon_versions_by_default():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def test_init_client_blocks_unsupported_telethon_versions_with_guidance():
+def test_init_client_allows_newer_telethon_via_session_version_alignment():
+    """本地机制：不再按版本号阻断，新版本 Telethon 通过 session 版本对齐兼容。"""
     telegram_client = MagicMock(return_value=MagicMock())
     client_module = load_client_module(
         telethon_version="1.43.2", client_factory=telegram_client
@@ -383,20 +384,20 @@ def test_init_client_blocks_unsupported_telethon_versions_with_guidance():
             {"api_id": 123, "api_hash": "hash"}, tmp_dir
         )
 
-        assert wrapper.client is None
-        telegram_client.assert_not_called()
-        assert str(tmp_dir / "user_session") not in client_module.get_client_cache()
+        assert wrapper.client is not None
+        telegram_client.assert_called_once()
+        assert str(tmp_dir / "user_session") in client_module.get_client_cache()
         error_messages = " ".join(
             str(call.args[0]) for call in client_module.logger.error.call_args_list
         )
-        assert "Telethon 版本 1.43.2" in error_messages
-        assert ">=1.42.0,<1.43.0" in error_messages
+        assert "Telethon 版本" not in error_messages
     finally:
         client_module.get_client_cache().clear()
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def test_init_client_reports_expected_six_schema_error_as_dependency_issue():
+def test_init_client_repairs_schema_error_or_reports_self_heal_failure():
+    """本地机制：schema 异常先尝试备份修复并重试，二次失败才报自愈失败。"""
     telegram_client = MagicMock(
         side_effect=ValueError("not enough values to unpack (expected 6, got 5)")
     )
@@ -411,13 +412,12 @@ def test_init_client_reports_expected_six_schema_error_as_dependency_issue():
         )
 
         assert wrapper.client is None
-        telegram_client.assert_called_once()
+        assert telegram_client.call_count == 2
         assert str(tmp_dir / "user_session") not in client_module.get_client_cache()
         error_messages = " ".join(
             str(call.args[0]) for call in client_module.logger.error.call_args_list
         )
-        assert "Telethon 版本 unknown" in error_messages
-        assert ">=1.42.0,<1.43.0" in error_messages
+        assert "会话 schema 自愈失败" in error_messages
     finally:
         client_module.get_client_cache().clear()
         shutil.rmtree(tmp_dir, ignore_errors=True)
