@@ -2,6 +2,7 @@ import asyncio
 import base64
 import io
 import json
+import re
 from collections.abc import Callable
 from typing import Any
 from urllib.parse import unquote
@@ -12,8 +13,21 @@ JSON_CONTRACT = """
 无论上面的自定义规则如何描述，你都必须只返回 JSON 对象，不得使用 Markdown 代码块或附加文字。
 JSON 必须且只能包含两个字段：
 {"filter": true/false, "msg": "判断原因"}
+filter 的含义必须严格遵守：true = 该消息应当被过滤（丢弃、不转发）；false = 该消息无需过滤（放行、正常转发）。
+当结论是“内容正常 / 应保留 / 可以转发”时，filter 必须为 false；只有确认需要拦截时才返回 true。
 filter 必须是 JSON 布尔值；msg 必须是非空字符串。
 """.strip()
+
+# 模型偶发把布尔极性写反：理由明确说“应保留转发/无需过滤”，filter 却给了 true。
+# 命中强放行措辞且 filter=true 时按放行处理（fail-open）；反向（false+拦截措辞）
+# 不翻转，避免启发式误伤。负向前缀（不/非/勿/没）视为拦截表述，不命中。
+_KEEP_VERDICT_RE = re.compile(
+    r"(?<![不非勿没])("
+    "应保留|应当保留|予以保留|无需过滤|无须过滤|不需要过滤|不应过滤|不该过滤|"
+    "不必过滤|可以放行|应放行|予以放行|可以转发|可转发|应转发|应当转发|"
+    "正常转发|属于正常内容|无风险内容"
+    ")"
+)
 
 DEFAULT_AI_FILTER_PROMPT = """判断消息文字和图片是否应该过滤。重点过滤：
 1. NSFW、色情、裸露或明显性暗示内容；
@@ -203,7 +217,17 @@ class ContentSafetyFilter:
         try:
             response = await asyncio.wait_for(call_model(), timeout=timeout_seconds)
             raw = str(getattr(response, "completion_text", "") or "")
-            return parse_ai_decision(raw)
+            decision = parse_ai_decision(raw)
+            if decision["filter"] and _KEEP_VERDICT_RE.search(decision["msg"]):
+                logger.warning(
+                    "[ContentSafety] AI 判定自相矛盾（filter=true 但理由为放行），"
+                    f"按放行处理: {decision['msg']}"
+                )
+                return {
+                    "filter": False,
+                    "msg": f"AI 布尔与结论矛盾，已按放行处理（{decision['msg']}）",
+                }
+            return decision
         except asyncio.TimeoutError:
             logger.warning(f"[ContentSafety] AI 过滤超时（{timeout_seconds}s），已放行")
             return {"filter": False, "msg": "AI 过滤超时，已放行"}

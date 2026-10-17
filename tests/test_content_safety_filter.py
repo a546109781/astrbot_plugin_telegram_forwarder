@@ -441,6 +441,70 @@ def test_ai_malformed_provider_output_is_fail_open():
     assert result == {"filter": False, "msg": "AI 过滤不可用，已放行"}
 
 
+def test_ai_inverted_boolean_with_keep_verdict_is_overridden():
+    """复现 2026-10-16 线上事故：模型返回 filter=true 但理由明确说“应保留转发”。"""
+    module = load_module()
+    content_filter = module.ContentSafetyFilter()
+    provider = _Provider(
+        ret='{"filter": true, "msg": "图片内容为《鸣潮》官方发布的演唱会巡演信息，'
+        '属于官方相关内容，应保留转发。"}'
+    )
+
+    result = asyncio.run(
+        content_filter.check_ai("text", None, dict(_BASE_AI_CONFIG), provider)
+    )
+
+    assert result["filter"] is False
+    assert "矛盾" in result["msg"]
+
+
+def test_ai_inverted_boolean_variants_are_overridden():
+    module = load_module()
+    content_filter = module.ContentSafetyFilter()
+    for msg in ("内容正常，无需过滤", "可以转发该消息", "属于正常内容，予以放行"):
+        provider = _Provider(ret=json.dumps({"filter": True, "msg": msg}))
+        result = asyncio.run(
+            content_filter.check_ai("t", None, dict(_BASE_AI_CONFIG), provider)
+        )
+        assert result["filter"] is False, msg
+
+
+def test_ai_negated_keep_phrases_still_filter():
+    """负向措辞（不放行/不能转发）不得触发反转兜底。"""
+    module = load_module()
+    content_filter = module.ContentSafetyFilter()
+    provider = _Provider(
+        ret='{"filter": true, "msg": "博彩推广二维码，不能转发，不予放行"}'
+    )
+
+    result = asyncio.run(
+        content_filter.check_ai("t", None, dict(_BASE_AI_CONFIG), provider)
+    )
+
+    assert result["filter"] is True
+
+
+def test_ai_consistent_filter_true_still_filters():
+    module = load_module()
+    content_filter = module.ContentSafetyFilter()
+    provider = _Provider(
+        ret='{"filter": true, "msg": "包含 NSFW 内容"}'
+    )
+
+    result = asyncio.run(
+        content_filter.check_ai("t", None, dict(_BASE_AI_CONFIG), provider)
+    )
+
+    assert result["filter"] is True
+
+
+def test_json_contract_states_filter_polarity():
+    module = load_module()
+
+    assert "true = 该消息应当被过滤" in module.JSON_CONTRACT
+    assert "false = 该消息无需过滤" in module.JSON_CONTRACT
+
+
 def test_ai_disabled_skips_provider_call():
     module = load_module()
     content_filter = module.ContentSafetyFilter()
